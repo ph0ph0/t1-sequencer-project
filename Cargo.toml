@@ -1,0 +1,8 @@
+[package]
+name = "t1-sequencer-project"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# ethereum
+alloy = "0.4.2"
