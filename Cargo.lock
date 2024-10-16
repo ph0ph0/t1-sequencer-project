@@ -250,6 +250,7 @@ dependencies = [
  "const-hex",
  "derive_more",
  "foldhash",
+ "getrandom",
  "hashbrown 0.15.0",
  "hex-literal",
  "indexmap",
