@@ -24,3 +24,9 @@ pub enum Priority<T> {
     Value(T),
     None,
 }
+
+impl<T: Ord + Clone> From<Option<T>> for Priority<T> {
+    fn from(value: Option<T>) -> Priority<T> {
+        value.map_or(Self::None, Priority::Value)
+    }
+}
