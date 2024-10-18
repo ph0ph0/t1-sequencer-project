@@ -1,8 +1,48 @@
 // -----sequence.rs-----
 
-// pub struct TransactionSequence<T: TransactionOrdering> {
+use std::collections::{BTreeSet, HashMap};
+use std::cmp::{Ordering};
+use alloy::primitives::Address;
 
-// }
+
+#[derive(PartialOrd, Eq, PartialEq)]
+pub struct PendingTransaction<T, O>
+where
+    T: Transaction + PartialEq + Eq + PartialOrd + Ord,
+    O: TransactionOrdering<T> + PartialEq + Eq + PartialOrd + Ord,
+{
+    submission_id: u64,
+    transaction: Box<T>,
+    priority: Priority<O::PriorityValue>,
+    // alloy Transaction type doesn't contain a sender field, so we must extract it from the TxEnvelope
+    sender: Address
+}
+
+impl<T, O> Ord for PendingTransaction<T, O> 
+where
+    T: Transaction + PartialEq + Eq + PartialOrd + Ord,
+    O: TransactionOrdering<T> + PartialEq + Eq + PartialOrd + Ord,
+{
+    fn cmp(&self, other: &Self) -> Ordering {
+        // Primary sort by priority fee (descending)
+        other.priority.cmp(&self.priority)
+            // Secondary sort by address
+            .then(self.sender.cmp(&other.sender))
+            // Tertiary sort by nonce
+            .then(self.transaction.nonce().cmp(&other.transaction.nonce()))
+    }
+}
+
+pub struct TransactionSequence<T, O>
+where
+    T: Transaction + PartialEq + Eq + PartialOrd + Ord,
+    O: TransactionOrdering<T> + PartialEq + Eq + PartialOrd + Ord,
+{
+    ordering: O,
+    ordered_transactions: BTreeSet<PendingTransaction<T, O>>,
+    nonce_map: HashMap<u64, u64>,
+    sum_priority_fee: u128,
+}
 
 // -----ordering.rs-----
 
@@ -149,7 +189,7 @@ use alloy::consensus::{
 };
 use alloy::primitives::{
     B256, 
-    Address, 
+    // Address, 
     ChainId, 
     // U256, 
     TxKind, 
