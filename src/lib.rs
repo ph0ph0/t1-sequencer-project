@@ -1,8 +1,9 @@
 // -----sequence.rs-----
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, BTreeMap, HashMap};
 use std::cmp::{Ordering};
 use alloy::primitives::Address;
+use std::sync::Arc;
 
 
 #[derive(PartialOrd, Eq, PartialEq)]
@@ -39,9 +40,60 @@ where
     O: TransactionOrdering<T> + PartialEq + Eq + PartialOrd + Ord,
 {
     ordering: O,
-    ordered_transactions: BTreeSet<PendingTransaction<T, O>>,
-    nonce_map: HashMap<u64, u64>,
+    sequenced_transactions: BTreeSet<PendingTransaction<T, O>>,
+    // nonce_map: HashMap<u64, u64>, //TODO: Remove
     sum_priority_fee: u128,
+}
+
+// ------pool.rs-----
+
+
+pub struct Pool <T, O>
+where
+    T: Transaction + PartialEq + Eq + PartialOrd + Ord,
+    O: TransactionOrdering<T> + PartialEq + Eq + PartialOrd + Ord,
+{
+    /// All transactions in the pool, grouped by sender, ordered by nonce
+    all_transactions: BTreeMap<TransactionId, Arc<dyn Transaction>>,
+    /// Struct that holds transactions ordered by priority fee and respects nonce ordering
+    transaction_sequence: TransactionSequence<T, O>
+}
+
+// -----identifiers.rs-----
+
+pub struct TransactionId {
+    /// Sender of this transaction
+    sender: Address,
+    /// Nonce of this transaction
+    nonce: u64
+}
+
+impl TransactionId {
+    pub const fn new(sender: Address, nonce: u64) -> Self {
+        Self {
+            sender,
+            nonce
+        }
+    }
+
+    pub fn ancestor(&self, on_chain_nonce: u64) -> Option<Self>{
+        (self.nonce > on_chain_nonce)
+            .then(|| Self::new(self.sender, self.nonce.saturating_sub(1)))
+    }
+
+    pub fn unchecked_ancestor(&self) -> Option<Self> {
+        (self.nonce != 0)
+            .then(|| Self::new(self.sender, self.nonce - 1))
+    }
+
+    pub const fn descendant(&self) -> Self {
+        Self::new(self.sender, self.next_nonce())
+    }
+
+    #[inline]
+    pub const fn next_nonce(&self) -> u64 {
+        self.nonce + 1
+    }
 }
 
 // -----ordering.rs-----
