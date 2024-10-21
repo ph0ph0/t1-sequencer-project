@@ -18,6 +18,10 @@ where
 
 // ------pool.rs-----
 
+use std::collections::hash_map;
+use alloy::primitives::aliases::TxHash;
+
+
 // TODO: Add derive
 pub struct PoolConfig {
     /// Max number of transactions a user can have in the pool
@@ -46,6 +50,77 @@ where
     queued_transactions: QueuedPool<QueuedOrdering<T>>,
     // Metrics for the pool and subpool
     // metrics: PoolMetrics TODO: Needed?
+}
+
+impl<T, O> Pool<T, O> 
+where
+    T: Transaction + PartialEq + Eq + PartialOrd + Ord,
+    O: TransactionOrdering<T> + PartialEq + Eq + PartialOrd + Ord,
+{
+    pub(crate) fn add_transaction(
+        &mut self,
+        tx: T,
+        on_chain_balance: U256,
+        on_chain_nonce: u64
+    ) {
+        // Check to see if the new tx already exists in the pool
+        if self.contains(tx.hash()) {
+            return Err(PoolError::new(*tx.hash(), PoolErrorKind::AlreadyImported))
+        }
+    }
+
+    pub(crate) fn contains(&self, tx_hash: &TxHash) -> bool {
+        self.all_transactions.contains_key(tx_hash)
+    }
+}
+
+pub struct AllTransactions {
+    /// All transactions in the pool, grouped by sender, orderd by nonce
+    txs: BTreeMap<TransactionId, Arc<dyn Transaction>>,
+    /// All transactions in the pool ordered by hash
+    by_hash: HashMap<TxHash, Arc<dyn Transaction>>,
+    /// Keeps track of the number of transactions by sender currently in the system
+    tx_counter: HashMap<Address, usize>,
+}
+
+impl AllTransactions {
+    /// Creates new instance
+    fn new(&self) -> Self {
+        Self {
+            txs: BTreeMap::new(),
+            by_hash: HashMap::new(),
+            tx_counter: HashMap::new()
+        }
+    }
+
+    pub(crate) fn contains(&self, tx_hash: &TxHash) -> bool {
+        self.by_hash.contains_key(tx_hash)
+    }
+
+    pub(crate) fn tx_inc(&mut self, sender: Address) {
+        let count = self.tx_counter.entry(sender).or_default();
+        *count += 1;
+    }
+
+    pub(crate) fn tx_decr(&mut self, sender: Address) {
+        if let hash_map::Entry::Occupied(mut entry) = self.tx_counter.entry(sender) {
+            let count = entry.get_mut();
+
+            if *count == 1 {
+                entry.remove();
+                return;
+            }
+            *count -= 1;
+        }
+    }
+
+    // TODO:
+    // pub(crate) update(
+    //     &mut self,
+    //     changed_accounts: HashMap<Address, SenderInfo>
+    // ) -> Vec<PoolUpdate> {
+
+    // }
 }
 
 // -----pending.rs-----
@@ -87,7 +162,7 @@ where
 {
     /// Determines how the transactions will be ordered
     ordering: O,
-    /// Used to determine when transactions were added to the pool
+    /// Assigned to each tx, used to determine when transactions were added to the pool
     submission_id: u64,
     /// All the transactions in the pool grouped by their sender and ordered by nonce
     by_id: BTreeMap<TransactionId, PendingTransaction<T, O>>,
@@ -168,7 +243,7 @@ pub struct QueuedPool<T: QueuedOrd> {
     /// Last submission_id for each sender, TODO: Do we need this?
     // last_sender_submission: BTreeSet<SubmissionSenderId>>,
 
-    // Keeps track of the number of transactions in the pool by the sender and teh last submission id.
+    // Keeps track of the number of transactions in the pool by the sender and the last submission id.
     sender_transaction_count: HashMap<Address, SenderTransactionCount>
 }
 
