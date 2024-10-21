@@ -38,7 +38,7 @@ where
     /// Represents the best subset of transaction from pending_transactions
     transaction_sequence: TransactionSequence<T, O>, // TODO: Do we need this?
     /// All transactions that cannot be executed on current state but might be able to in the future
-    queued_transactions: QueuedPool<T>,
+    queued_transactions: QueuedPool<QueuedOrd<T::Transaction>,
     /// Metrics for the pool and subpool
     metrics: PoolMetrics
 }
@@ -92,8 +92,8 @@ where
 
 // -----queued.rs-----
 
-// TODO: Derive
-pub struct QueuedPoolTransaction<T: QueuedOrd {
+#[derive(PartialOrd, Eq, PartialEq)]
+pub struct QueuedPoolTransaction<T: QueuedOrd> {
 
     /// Id to indicate when transaction was added to pool
     submission_id: u64,
@@ -101,14 +101,54 @@ pub struct QueuedPoolTransaction<T: QueuedOrd {
     transaction: T
 }
 
+impl<T: QueuedOrd> Ord for QueuedPoolTransaction<T> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        // First, compare transactions by their own Ord impl (see `impl Ord for QueuedOrdering`)
+        // Then compare the submission_ids.
+        self.transaction
+            .cmp(&other.transaction)
+            .then_with(|| other.submission_id.cmp(&self.submission_id))
+    }
+}
+
+pub trait QueuedOrd: Ord + Clone {
+    type Transasction: alloy::consensus::Transaction;
+}
+
+
+/// Type wrapper for an alloy Transaction in the queue, allowing them to be ordered by submission_id (see impl<T: QueuedOrd> Ord for QueuedPoolTransaction<T>)
+pub struct QueuedOrdering(Arc<dyn Transaction>);
+
+impl Ord for QueuedOrdering {
+    fn cmp(&self, other: &Self) -> Ordering {
+        other.0.max_fee_per_gas()
+            .cmp(&self.0.max_fee_per_gas())
+    }
+}
+
+impl PartialOrd for QueuedOrdering {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq for QueuedOrdering {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl Eq for QueuedOrdering {}
+
+
 // TODO: Derive
-pub struct QueuedPool {
+pub struct QueuedPool<T: QueuedOrd> {
     /// Keeps track of the last transaction submitted to the pool
     current_submission_id: u64,
     /// All transaction currently inside the pool grouped by sender and ordered by nonce
     by_id: BTreeMap<TransactionId, QueuedPoolTransaction<T>>,
     /// All transactions sorted by their order function. The higher the better.
-    best: BTreeSet<ParkedPoolTransaction<T>>
+    best: BTreeSet<QueuedPoolTransaction<T>>,
     /// Last submission_id for each sender,
     last_sender_submission: BTreeSet<SubmissionSenderId>>,
     // Keeps track of the number of transactions in the pool by the sender and teh last submission id.
