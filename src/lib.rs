@@ -20,15 +20,16 @@ where
 
 // TODO: Add derive
 pub struct PoolConfig {
-
+    /// Max number of transactions a user can have in the pool
+    pub max_account_slots: usize
 }
 
-pub struct PoolMetrics {
+// pub struct PoolMetrics { TODO: Needed?
 
-}
+// }
 
 
-pub struct Pool <T, O>
+pub struct Pool<T, O>
 where
     T: Transaction + PartialEq + Eq + PartialOrd + Ord,
     O: TransactionOrdering<T> + PartialEq + Eq + PartialOrd + Ord,
@@ -43,8 +44,8 @@ where
     transaction_sequence: TransactionSequence<T, O>, // TODO: Do we need this?
     /// All transactions that cannot be executed on current state but might be able to in the future
     queued_transactions: QueuedPool<QueuedOrdering<T>>,
-    /// Metrics for the pool and subpool
-    metrics: PoolMetrics
+    // Metrics for the pool and subpool
+    // metrics: PoolMetrics TODO: Needed?
 }
 
 // -----pending.rs-----
