@@ -23,6 +23,10 @@ pub struct PoolConfig {
 
 }
 
+pub struct PoolMetrics {
+
+}
+
 
 pub struct Pool <T, O>
 where
@@ -38,7 +42,7 @@ where
     /// Represents the best subset of transaction from pending_transactions
     transaction_sequence: TransactionSequence<T, O>, // TODO: Do we need this?
     /// All transactions that cannot be executed on current state but might be able to in the future
-    queued_transactions: QueuedPool<QueuedOrd<T::Transaction>,
+    queued_transactions: QueuedPool<QueuedOrdering<T>>,
     /// Metrics for the pool and subpool
     metrics: PoolMetrics
 }
@@ -111,34 +115,44 @@ impl<T: QueuedOrd> Ord for QueuedPoolTransaction<T> {
     }
 }
 
-pub trait QueuedOrd: Ord + Clone {
-    type Transasction: alloy::consensus::Transaction;
+pub trait QueuedOrd: Ord {
+    type Transaction: alloy::consensus::Transaction;
 }
 
+/// Type wrapper for an alloy Transaction in the queue, allowing them to be ordered by max_fee_per_gas then submission_id (see Ord implemntation below and impl<T: QueuedOrd> Ord for QueuedPoolTransaction<T>)
+pub struct QueuedOrdering<T>(Arc<T>);
 
-/// Type wrapper for an alloy Transaction in the queue, allowing them to be ordered by submission_id (see impl<T: QueuedOrd> Ord for QueuedPoolTransaction<T>)
-pub struct QueuedOrdering(Arc<dyn Transaction>);
-
-impl Ord for QueuedOrdering {
-    fn cmp(&self, other: &Self) -> Ordering {
-        other.0.max_fee_per_gas()
-            .cmp(&self.0.max_fee_per_gas())
+impl<T: Transaction> QueuedOrdering<T> {
+    pub fn max_fee_per_gas(&self) -> u128 {
+        self.0.max_fee_per_gas()
     }
 }
 
-impl PartialOrd for QueuedOrdering {
+impl<T: Transaction> Ord for QueuedOrdering<T> {
+    // Sort in reverse order (ie higher gas fees towards end of set)
+    fn cmp(&self, other: &Self) -> Ordering {
+        other.max_fee_per_gas()
+            .cmp(&self.max_fee_per_gas())
+    }
+}
+
+impl<T: Transaction> PartialOrd for QueuedOrdering<T> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl PartialEq for QueuedOrdering {
+impl<T: Transaction> PartialEq for QueuedOrdering<T> {
     fn eq(&self, other: &Self) -> bool {
         self.cmp(other) == Ordering::Equal
     }
 }
 
-impl Eq for QueuedOrdering {}
+impl<T: Transaction> Eq for QueuedOrdering<T> {}
+
+impl<T: Transaction> QueuedOrd for QueuedOrdering<T> {
+    type Transaction = T;
+}
 
 
 // TODO: Derive
@@ -149,10 +163,12 @@ pub struct QueuedPool<T: QueuedOrd> {
     by_id: BTreeMap<TransactionId, QueuedPoolTransaction<T>>,
     /// All transactions sorted by their order function. The higher the better.
     best: BTreeSet<QueuedPoolTransaction<T>>,
-    /// Last submission_id for each sender,
-    last_sender_submission: BTreeSet<SubmissionSenderId>>,
+
+    /// Last submission_id for each sender, TODO: Do we need this?
+    // last_sender_submission: BTreeSet<SubmissionSenderId>>,
+
     // Keeps track of the number of transactions in the pool by the sender and teh last submission id.
-    sender_transaction_count: FxHashMap<SenderId, SenderTransactionCount>
+    sender_transaction_count: HashMap<Address, SenderTransactionCount>
 }
 
 
@@ -191,6 +207,12 @@ impl TransactionId {
     pub const fn next_nonce(&self) -> u64 {
         self.nonce + 1
     }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SenderTransactionCount {
+    cound: u64,
+    last_submission: u64
 }
 
 // -----ordering.rs-----
