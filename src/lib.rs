@@ -5,6 +5,45 @@ use std::cmp::{Ordering};
 use alloy::primitives::Address;
 use std::sync::Arc;
 
+pub struct TransactionSequence<T, O>
+where
+    T: Transaction + PartialEq + Eq + PartialOrd + Ord,
+    O: TransactionOrdering<T> + PartialEq + Eq + PartialOrd + Ord,
+{
+    ordering: O,
+    sequenced_transactions: BTreeSet<PendingTransaction<T, O>>,
+    // nonce_map: HashMap<u64, u64>, //TODO: Remove
+    sum_priority_fee: u128,
+}
+
+// ------pool.rs-----
+
+// TODO: Add derive
+pub struct PoolConfig {
+
+}
+
+
+pub struct Pool <T, O>
+where
+    T: Transaction + PartialEq + Eq + PartialOrd + Ord,
+    O: TransactionOrdering<T> + PartialEq + Eq + PartialOrd + Ord,
+{
+    config: PoolConfig,
+    /// All transactions in the pool, grouped by sender, ordered by nonce
+    all_transactions: BTreeMap<TransactionId, Arc<dyn Transaction>>,
+    ///All transactions that can be executed on the current chain state
+    pending_transactions: PendingPool<T, O>,
+    /// Struct that holds transactions ordered by priority fee and respects nonce ordering
+    /// Represents the best subset of transaction from pending_transactions
+    transaction_sequence: TransactionSequence<T, O>, // TODO: Do we need this?
+    /// All transactions that cannot be executed on current state but might be able to in the future
+    queued_transactions: QueuedPool<T>,
+    /// Metrics for the pool and subpool
+    metrics: PoolMetrics
+}
+
+// -----pending.rs-----
 
 #[derive(PartialOrd, Eq, PartialEq)]
 pub struct PendingTransaction<T, O>
@@ -24,6 +63,7 @@ where
     T: Transaction + PartialEq + Eq + PartialOrd + Ord,
     O: TransactionOrdering<T> + PartialEq + Eq + PartialOrd + Ord,
 {
+    // TODO: Probs need to remove the nonce sort as it is not needed
     fn cmp(&self, other: &Self) -> Ordering {
         // Primary sort by priority fee (descending)
         other.priority.cmp(&self.priority)
@@ -34,30 +74,47 @@ where
     }
 }
 
-pub struct TransactionSequence<T, O>
+// TODO: Add derive
+pub struct PendingPool<T, O> 
 where
     T: Transaction + PartialEq + Eq + PartialOrd + Ord,
     O: TransactionOrdering<T> + PartialEq + Eq + PartialOrd + Ord,
 {
+    /// Determines how the transactions will be ordered
     ordering: O,
-    sequenced_transactions: BTreeSet<PendingTransaction<T, O>>,
-    // nonce_map: HashMap<u64, u64>, //TODO: Remove
-    sum_priority_fee: u128,
+    /// Used to determine when transactions were added to the pool
+    submission_id: u64,
+    /// All the transactions in the pool grouped by their sender and ordered by nonce
+    by_id: BTreeMap<TransactionId, PendingTransaction<T, O>>,
+    /// All transactions sorted by priority
+    all: BTreeSet<PendingTransaction<T, O>>
 }
 
-// ------pool.rs-----
+// -----queued.rs-----
 
+// TODO: Derive
+pub struct QueuedPoolTransaction<T: QueuedOrd {
 
-pub struct Pool <T, O>
-where
-    T: Transaction + PartialEq + Eq + PartialOrd + Ord,
-    O: TransactionOrdering<T> + PartialEq + Eq + PartialOrd + Ord,
-{
-    /// All transactions in the pool, grouped by sender, ordered by nonce
-    all_transactions: BTreeMap<TransactionId, Arc<dyn Transaction>>,
-    /// Struct that holds transactions ordered by priority fee and respects nonce ordering
-    transaction_sequence: TransactionSequence<T, O>
+    /// Id to indicate when transaction was added to pool
+    submission_id: u64,
+    /// The transaction
+    transaction: T
 }
+
+// TODO: Derive
+pub struct QueuedPool {
+    /// Keeps track of the last transaction submitted to the pool
+    current_submission_id: u64,
+    /// All transaction currently inside the pool grouped by sender and ordered by nonce
+    by_id: BTreeMap<TransactionId, QueuedPoolTransaction<T>>,
+    /// All transactions sorted by their order function. The higher the better.
+    best: BTreeSet<ParkedPoolTransaction<T>>
+    /// Last submission_id for each sender,
+    last_sender_submission: BTreeSet<SubmissionSenderId>>,
+    // Keeps track of the number of transactions in the pool by the sender and teh last submission id.
+    sender_transaction_count: FxHashMap<SenderId, SenderTransactionCount>
+}
+
 
 // -----identifiers.rs-----
 
