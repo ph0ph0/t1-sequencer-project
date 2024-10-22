@@ -66,6 +66,7 @@ where
             return Err(PoolError::new(*tx.tx_hash(), PoolErrorKind::AlreadyImported))
         }
 
+        // TODO: Return correct result
         Ok(AddedTransaction::Pending(tx))
     }
 
@@ -474,6 +475,15 @@ pub struct PoolError {
     pub hash: TxHash,
     /// The kind of error
     pub kind: PoolErrorKind
+}
+
+impl PoolError {
+    fn new(hash: TxHash, kind: PoolErrorKind) -> Self {
+        Self {
+            hash,
+            kind
+        }
+    }
 }
 
 /// The kind of pool error 
