@@ -66,10 +66,16 @@ where
             return Err(PoolError::new(*tx.tx_hash(), PoolErrorKind::AlreadyImported))
         }
 
+        // TODO: Update user info?
+
+        // TODO: Add match statement
+        self.all_transactions.insert_tx(tx, on_chain_balance, on_chain_nonce);
+
         // TODO: Return correct result
         Ok(AddedTransaction::Pending(tx))
     }
 
+    /// Checks if the given tx_hash is present in the all_transactions pool
     pub(crate) fn contains(&self, tx_hash: &TxHash) -> bool {
         self.all_transactions.contains(tx_hash)
     }
@@ -88,6 +94,9 @@ pub enum AddedTransaction
     }
 }
 
+/// Identifier for the transaction Sub-pool
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
+#[repr(u8)]
 pub enum SubPool {
     // Queued pool holds transactions that cannot be added to Pending due to nonce gaps or lack of funds
     Queued = 0,
@@ -95,7 +104,9 @@ pub enum SubPool {
     Pending
 }
 
-// TODO: Move this somewhere that makes sense
+
+// -----all_transactions.rs----
+
 pub struct AllTransactions
 where 
 {
@@ -139,6 +150,18 @@ impl AllTransactions
         }
     }
 
+    pub(crate) fn insert_tx(
+        &mut self,
+        transaction: TxEnvelope,
+        on_chain_balance: U256,
+        on_chain_nonce: u64,
+    ) -> InsertResult {
+        let transaction_nonce: Option<u64> = match transaction {
+            TxEnvelope::Eip1559(signed_tx) => Ok(signed_tx.tx().nonce),
+            _ => Err(PoolError::new(*transaction.tx_hash(), PoolErrorKind::UnknownTransactionType))
+        };
+    }
+
     // TODO:
     // pub(crate) update(
     //     &mut self,
@@ -146,6 +169,73 @@ impl AllTransactions
     // ) -> Vec<PoolUpdate> {
 
     // }
+}
+
+pub(crate) type InsertResult = Result<InsertOk, InsertErr>;
+
+pub struct InsertOk {
+    /// Reference to the transaction
+    tranasction: Arc<TxEnvelope>,
+    /// The pool to move the transaction to
+    move_to: SubPool,
+    /// State of the inserted transaction
+    state: TxState,
+    /// The transaction that was replaced
+    replaced_tx: Option<(Arc<TxEnvelope>, SubPool)>,
+    /// Additional updates to transactions affected by this change
+    updates: Vec<PoolUpdate>
+}
+
+pub(crate) enum InsertErr {
+    /// Attempted to replace existing transaction, but was underpriced
+    Underpriced {
+        transaction: Arc<TxEnvelope>,
+        #[allow(dead_code)]
+        existing: TxHash,
+    },
+    /// Attempted to insert a transaction that would overdraft the sender's balance at the time of
+    /// insertion.
+    Overdraft { transaction: Arc<TxEnvelope> },
+    /// The transactions feeCap is lower than the chain's minimum fee requirement.
+    ///
+    /// See also [`MIN_PROTOCOL_BASE_FEE`]
+    FeeCapBelowMinimumProtocolFeeCap { transaction: Arc<TxEnvelope>, fee_cap: u128 },
+    /// Sender currently exceeds the configured limit for max account slots.
+    ///
+    /// The sender can be considered a spammer at this point.
+    ExceededSenderTransactionsCapacity { transaction: Arc<TxEnvelope> },
+    /// Transaction gas limit exceeds block's gas limit
+    TxGasLimitMoreThanAvailableBlockGas {
+        transaction: Arc<TxEnvelope>,
+        block_gas_limit: u64,
+        tx_gas_limit: u64,
+    },
+}
+
+// -----updates.rs
+
+// A change of the transaction's location
+///
+/// NOTE: this guarantees that `current` and `destination` differ.
+#[derive(Debug)]
+pub(crate) struct PoolUpdate {
+    /// Internal tx id.
+    pub(crate) id: TransactionId,
+    /// Hash of the transaction.
+    pub(crate) hash: TxHash,
+    /// Where the transaction is currently held.
+    pub(crate) current: SubPool,
+    /// Where to move the transaction to.
+    pub(crate) destination: Destination,
+}
+
+/// Where to move an existing transaction.
+#[derive(Debug)]
+pub(crate) enum Destination {
+    /// Discard the transaction.
+    Discard,
+    /// Move transaction to pool
+    Pool(SubPool),
 }
 
 // -----pending.rs-----
@@ -275,6 +365,7 @@ pub struct QueuedPool<T: QueuedOrd> {
     /// Last submission_id for each sender, TODO: Do we need this?
     // last_sender_submission: BTreeSet<SubmissionSenderId>>,
 
+    // TODO: Move up to Pool?
     // Keeps track of the number of transactions in the pool by the sender and the last submission id.
     sender_transaction_count: HashMap<Address, SenderTransactionCount>
 }
@@ -282,6 +373,11 @@ pub struct QueuedPool<T: QueuedOrd> {
 
 // -----identifiers.rs-----
 
+/// A unique identifier of a transaction of a Sender.
+///
+/// This serves as an identifier for dependencies of a transaction:
+/// A transaction with a nonce higher than the current state nonce depends on `tx.nonce - 1`.
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct TransactionId {
     /// Sender of this transaction
     sender: Address,
@@ -317,9 +413,10 @@ impl TransactionId {
     }
 }
 
+// TODO: used?
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SenderTransactionCount {
-    cound: u64,
+    count: u64,
     last_submission: u64
 }
 
@@ -492,6 +589,10 @@ pub enum PoolErrorKind {
     // Transaction already exists in the pool
     #[error("already imported")]
     AlreadyImported,
+
+    // Currently the implementation only handles Eip1559 txs
+    #[error("unknown transaction type")]
+    UnknownTransactionType,
 }
 
 
