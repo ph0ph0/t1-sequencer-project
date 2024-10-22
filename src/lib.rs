@@ -19,6 +19,7 @@ where
 // ------pool.rs-----
 
 use std::collections::hash_map;
+use std::collections::btree_map::Entry;
 use alloy::primitives::aliases::TxHash;
 
 
@@ -26,7 +27,14 @@ use alloy::primitives::aliases::TxHash;
 pub struct PoolConfig {
     /// Max number of transactions a user can have in the pool
     pub max_account_slots: usize,
-    pub block_gas_limit: u64
+    /// The gas limit of the block
+    pub block_gas_limit: u64,
+    /// Minimum base fee required by the protocol.
+    /// 
+    /// Transactions with a lower base fee will never be included by the chain
+    pub minimal_protocol_basefee: u64,
+    /// Expected base fee for the pending block
+    pub pending_base_fee: u64
 }
 
 // pub struct PoolMetrics { TODO: Needed?
@@ -87,28 +95,253 @@ where
         on_chain_balance: U256,
         on_chain_nonce: u64,
     ) -> InsertResult {
-        
+
+        let transaction = Arc::new(transaction);
+
         // Get the Signed<TxEip1559> type
-        let signed_tx_ref = match transaction {
+        let signed_tx = match &*transaction {
             TxEnvelope::Eip1559(signed_tx) => Ok(signed_tx),
-            _ => Err(InsertErr::UnknownTransactionType { transaction: Arc::new(transaction) })
+            _ => Err(InsertErr::UnknownTransactionType { transaction: Arc::clone(&transaction) })
         }?;
 
-        // Get the TxEip1559 type
-        let unsigned_tx_ref = signed_tx_ref.tx();
+        // Get the TxEip1559 type so we can access its properties (ie gas_limit, nonce etc)
+        let unsigned_tx = signed_tx.tx();
 
-        assert!(on_chain_nonce <= unsigned_tx_ref.nonce, "Invalid transaction");
-
-        // Convert transaction to underlying Transaction type
-        let signer = transaction
+        // Get transaction signer
+        let signer = &transaction
             .recover_signer()
             .map_err(|signature_error| InsertErr::SignatureError { signature_error })?;
+        // Get nonce
+        let tx_nonce = unsigned_tx.nonce;
+        // Get gas_limit
+        let gas_limit = unsigned_tx.gas_limit();
 
-        let transaction = self.ensure_valid(&unsigned_tx_ref.gas_limit(), &signer)?;
+
+        // Validate the transaction
+        // Checks the following:
+        // - enough transaction slots for user
+        // - tx_gas_limit > block_gas_limit
+        // - on_chain_nonce <= tx_nonce
+        let transaction = self.ensure_valid(Arc::clone(&transaction), gas_limit, &signer, on_chain_nonce, tx_nonce)?;
 
 
-        // TODO: Return correct result
-        Ok(InsertOk{transaction, move_to: state.into(), state, replaced_tx, updates})
+        // Create TransactionId
+        let transaction_id = TransactionId {
+            sender: signer.clone(),
+            nonce: tx_nonce
+
+        };
+
+        let mut state = TxState::default();
+        // TODO: Check this
+        let mut cumulative_cost = U256::ZERO;
+        let mut updates = Vec::new();
+
+        // Tx does not exceed block gas limit, checked in ensure_valid
+        state.insert(TxState::NOT_TOO_MUCH_GAS);
+
+        // TransactionId of the ancestor transaction. Will be None if the transaction nonce matches the on_chain_nonce
+        let ancestor = TransactionId::ancestor(
+            tx_nonce,
+            on_chain_nonce,
+            *signer
+        );
+
+        if !transaction.is_eip4844() {
+            // Non Eip844 transactions always satisfy blob fee cap condition
+            // Non-EIP4844 transaction always satisfy the blob fee cap condition
+            state.insert(TxState::ENOUGH_BLOB_FEE_CAP_BLOCK);
+        } else {
+            // handle Eip844 transaction
+            // ...
+        }
+
+        // If there's no ancestor tx then this is the next transaction to be executed
+        if ancestor.is_none() {
+            state.insert(TxState::NO_NONCE_GAPS);
+            state.insert(TxState::NO_PARKED_ANCESTORS);
+        }
+
+        // TODO: Check this
+        // Check dynamic fee
+        let fee_cap = transaction.max_fee_per_gas();
+
+        if fee_cap < self.config.minimal_protocol_basefee as u128 {
+            return Err(InsertErr::FeeCapBelowMinimumProtocolFeeCap { transaction, fee_cap })
+        }
+        if fee_cap >= self.config.pending_base_fee as u128 {
+            state.insert(TxState::ENOUGH_FEE_CAP_BLOCK);
+        }
+
+        // placeholder for the replaced transaction, if any
+        let mut replaced_tx = None;
+
+        let pool_tx = PoolInternalTransaction {
+            transaction: Arc::clone(&transaction),
+            subpool: state.into(),
+            state,
+            cumulative_cost,
+        };
+
+        // Attempt to insert the transaction
+        match self.all_transactions.txs.entry(transaction_id) {
+            Entry::Vacant(entry) => {
+                // Insert the transaction in both maps
+                self.all_transactions.by_hash.insert(*pool_tx.transaction.tx_hash(), pool_tx.transaction.clone());
+                entry.insert(pool_tx.into());
+            }
+            Entry::Occupied(mut entry) => {
+                // Transaction with the same nonce already exists: replacement candidate
+                let existing_transaction = entry.get().transaction.as_ref();
+
+                // Get the Signed<TxEip1559> type for existing transaction
+                let signed_existing_tx_ref = match existing_transaction {
+                    TxEnvelope::Eip1559(signed_tx) => Ok(signed_tx),
+                    _ => Err(InsertErr::UnknownTransactionType { transaction: Arc::clone(&transaction) })
+                }?;
+            
+                // Get the TxEip1559 type for existing transaction
+                let unsigned_existing_tx_ref = signed_existing_tx_ref.tx();
+
+                let existing_max_fee_per_gas = unsigned_existing_tx_ref.max_fee_per_gas;
+
+                // Ensure the new transaction is not underpriced
+                if Self::is_underpriced(existing_max_fee_per_gas, unsigned_tx.max_fee_per_gas)
+                {
+                    return Err(InsertErr::Underpriced {
+                        transaction: Arc::clone(&pool_tx.transaction),
+                        existing: *existing_transaction.tx_hash(),
+                    })
+                }
+                let new_hash = *pool_tx.transaction.tx_hash();
+                let new_transaction = pool_tx.transaction.clone();
+                let replaced = entry.insert(pool_tx.into());
+                self.all_transactions.by_hash.remove(replaced.transaction.tx_hash());
+                self.all_transactions.by_hash.insert(new_hash, new_transaction);
+                // also remove the hash
+                replaced_tx = Some((replaced.transaction, replaced.subpool));
+            }
+        }
+
+        // TransactionId of the next transaction according to the on-chain nonce
+        let on_chain_id = TransactionId::new(*signer, on_chain_nonce);
+
+        {
+            // get all transactions of the sender's account
+            let mut descendants = self.all_transactions.descendant_txs_mut(&on_chain_id).peekable();
+
+            // Tracks the next nonce we expect if the transactions are gapless
+            let mut next_nonce = on_chain_id.nonce;
+
+            // TODO: Double check this bug
+            // We need to find out if the next transaction of the sender is considered pending
+            // NOTE: Phill: This is a bug. We cannot find ancestors using descendants! (L1658)
+            // All comments below are mine
+            // Result: If the current tx's nonce matched the on-chain nonce, will be false (L1642)
+            // If the current tx had ancestors, will always be true (see bug on L1658)
+            let mut has_parked_ancestor = if ancestor.is_none() {
+                // If it doesn't have any ancestors (tx that need to execute before)
+                // the new transaction is the next one
+                false
+            } else {
+                // Otherwise, it has ancestors (ie txs that need to execute).
+                // The transaction was added above so the _inclusive_ descendants iterator
+                // returns at least 1 tx (as it includes the tx that was just added! (ie this current one))
+                // descendants.peek() allows us to look at the tx with the next highest nonce after this current one
+                let (id, tx) = descendants.peek().expect("includes >= 1");
+                // If the id of the next descendant
+                // is less than the current tx (inserted_tx)
+                // then we flip (but don't set) and return the is_pending flag of the descendant tx.
+                // This makes no sense as descendants have a larger nonce and 
+                // for the current tx to have a smaller nonce it would be an ancestor.
+                if id.nonce < tx_nonce {
+                    // tx here is the next descendant of the current tx.
+                    !tx.state.is_pending()
+                } else {
+                    true
+                }
+            };
+
+
+
+        // Traverse all transactions of the sender and update existing transactions
+            // NOTE: Phill: This is where we ensure that txs are added without gaps
+            // We are iterating through the descendants. When we go through the loop,
+            // we first check if the current nonce is equal to the expected nonce.
+            // If it is, we continue, otherwise break.
+            // At the end of the loop, we update to the next expected nonce,
+            // therefore ensuring that there are no nonce gaps.
+            for (id, tx) in descendants {
+                let current_pool = tx.subpool;
+
+                // If there's a nonce gap, we can shortcircuit
+                // This nonce check is basically checking if there is
+                //  a continuous thread of nonces in the txs BTMap (which holds all txs) 
+                // that starts with the current ocNonce.
+                // So we continue if the current descendant is part of that chain.
+                if next_nonce != id.nonce {
+                    break
+                }
+
+                // close the nonce gap
+                tx.state.insert(TxState::NO_NONCE_GAPS);
+
+                // set cumulative cost
+                tx.cumulative_cost = cumulative_cost;
+
+                // Update for next transaction
+                cumulative_cost = tx.next_cumulative_cost();
+
+                if cumulative_cost > on_chain_balance {
+                    // sender lacks sufficient funds to pay for this transaction
+                    tx.state.remove(TxState::ENOUGH_BALANCE);
+                } else {
+                    tx.state.insert(TxState::ENOUGH_BALANCE);
+                }
+
+                // Update ancestor condition.
+                if has_parked_ancestor {
+                    tx.state.remove(TxState::NO_PARKED_ANCESTORS);
+                } else {
+                    tx.state.insert(TxState::NO_PARKED_ANCESTORS);
+                }
+                has_parked_ancestor = !tx.state.is_pending();
+
+                // update the pool based on the state
+                tx.subpool = tx.state.into();
+
+                if transaction_id.eq(id) {
+                    // if it is the new transaction, track its updated state
+                    state = tx.state;
+                } else {
+                    // check if anything changed
+                    if current_pool != tx.subpool {
+                        updates.push(PoolUpdate {
+                            id: *id,
+                            hash: *tx.transaction.tx_hash(),
+                            current: current_pool,
+                            destination: Destination::Pool(tx.subpool),
+                        })
+                    }
+                }
+
+                // increment for next iteration
+                next_nonce = id.next_nonce();
+            }
+        }
+
+        // If this wasn't a replacement transaction we need to update the counter.
+        if replaced_tx.is_none() {
+            self.all_transactions.tx_inc(transaction_id.sender);
+        }
+
+        Ok(InsertOk { 
+            transaction: Arc::clone(&transaction), 
+            move_to: state.into(), 
+            state, 
+            replaced_tx, 
+            updates 
+        })
     }
 
     /// Validation checks for new transaction
@@ -117,25 +350,81 @@ where
     /// - Spam protection: reject transactions from senders that have exhausted their slot capacity
     /// - Gas limit: reject transactions that exceed a block's maximum gas
     fn ensure_valid(
-        &self,
-        tx_gas_limit: u64,
-        signer: &Address,
-        transaction: TxEnvelope
-    ) -> Result<TxEnvelope, InsertErr> {
+    &self,
+    transaction: Arc<TxEnvelope>,  // Take an Arc by value
+    tx_gas_limit: u64,
+    signer: &Address,
+    on_chain_nonce: u64,
+    tx_nonce: u64
+    ) -> Result<Arc<TxEnvelope>, InsertErr> {  // Return an Arc instead of a reference
         let user_tx_count = self.all_transactions.tx_counter.get(signer).copied().unwrap_or_default();
 
         if user_tx_count >= self.config.max_account_slots {
-            return Err(InsertErr::ExceededSenderTransactionsCapacity { transaction: Arc::new(transaction) })
+            return Err(InsertErr::ExceededSenderTransactionsCapacity { transaction: transaction })
         }
 
         if tx_gas_limit > self.config.block_gas_limit {
             return Err(InsertErr::TxGasLimitMoreThanAvailableBlockGas {
                 block_gas_limit: self.config.block_gas_limit,
                 tx_gas_limit,
-                transaction: Arc::new(transaction),
+                transaction: transaction,
             })
         }
+
+        if on_chain_nonce <= tx_nonce {
+            return Err(InsertErr::InvalidTxNonce {
+                on_chain_nonce,
+                tx_nonce,
+                transaction
+            })
+        }
+        
         Ok(transaction)
+    }
+
+
+    fn is_underpriced(existing_max_fee_per_gas: u128, possible_replacement_max_fee_per_gas: u128) -> bool {
+        possible_replacement_max_fee_per_gas <  existing_max_fee_per_gas
+    }
+}
+
+/// The internal transaction typed used by `Pool` which contains additional info used for
+/// determining the current state of the transaction.
+#[derive(Debug)]
+pub(crate) struct PoolInternalTransaction {
+    /// The actual transaction object.
+    pub(crate) transaction: Arc<TxEnvelope>,
+    /// The `SubPool` that currently contains this transaction.
+    pub(crate) subpool: SubPool,
+    /// Keeps track of the current state of the transaction and therefore in which subpool it
+    /// should reside
+    pub(crate) state: TxState,
+    /// The total cost of all transactions before this transaction.
+    ///
+    /// This is the combined `cost` of all transactions from the same sender that currently
+    /// come before this transaction.
+    pub(crate) cumulative_cost: U256,
+}
+
+impl PoolInternalTransaction {
+    /// Used to sum the cost of all transactions to update PoolInternalTransaction.cumulative_cost
+    fn next_cumulative_cost(&self) -> U256 {
+        self.cumulative_cost + &self.cost()
+    }
+
+    /// Returns the cost that this transaction is allowed to consume:
+    ///
+    /// For EIP-1559 transactions: `max_fee_per_gas * gas_limit + tx_value`.
+    fn cost(&self) -> U256 {
+        // System currently only handles Eip1559 txs
+        let signed_tx = self.transaction.as_eip1559().expect("Unknown transaction type");
+        let unsigned_tx = signed_tx.tx();
+
+        let max_fee_per_gas = unsigned_tx.max_fee_per_gas;
+        let gas_limit = unsigned_tx.gas_limit;
+        let value = unsigned_tx.value;
+
+        U256::from(max_fee_per_gas) * U256::from(gas_limit) + value
     }
 }
 
@@ -151,21 +440,11 @@ pub enum AddedTransaction
     }
 }
 
-/// Identifier for the transaction Sub-pool
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
-#[repr(u8)]
-pub enum SubPool {
-    // Queued pool holds transactions that cannot be added to Pending due to nonce gaps or lack of funds
-    Queued = 0,
-    // Pending pool contains transactions that can be executed on the current statex
-    Pending
-}
-
 pub(crate) type InsertResult = Result<InsertOk, InsertErr>;
 
 pub struct InsertOk {
     /// Reference to the transaction
-    tranasction: Arc<TxEnvelope>,
+    transaction: Arc<TxEnvelope>,
     /// The pool to move the transaction to
     move_to: SubPool,
     /// State of the inserted transaction
@@ -177,8 +456,14 @@ pub struct InsertOk {
 }
 
 pub(crate) enum InsertErr {
-    /// Unkown transaction error, currently only Eip1559 transactions are handled
+    /// Unknown transaction error, currently only Eip1559 transactions are handled
     UnknownTransactionType { transaction: Arc<TxEnvelope> },
+    /// On-chain nonce must be less than or equal to the transaction nonce
+    InvalidTxNonce {
+        on_chain_nonce: u64,
+        tx_nonce: u64,
+        transaction: Arc<TxEnvelope>
+    },
     /// Error in the signature of the transaction
     SignatureError {signature_error: SignatureError},
     /// Attempted to replace existing transaction, but was underpriced
@@ -215,9 +500,9 @@ pub struct AllTransactions
 where 
 {
     /// All transactions in the pool, grouped by sender, orderd by nonce
-    txs: BTreeMap<TransactionId, TxEnvelope>,
+    txs: BTreeMap<TransactionId, PoolInternalTransaction>,
     /// All transactions in the pool ordered by hash
-    by_hash: HashMap<TxHash, TxEnvelope>,
+    by_hash: HashMap<TxHash, Arc<TxEnvelope>>,
     /// Keeps track of the number of transactions by sender currently in the system
     tx_counter: HashMap<Address, usize>,
 }
@@ -252,6 +537,17 @@ impl AllTransactions
             }
             *count -= 1;
         }
+    }
+
+    /// Returns all mutable transactions that _follow_ after the given id but have the same sender.
+    ///
+    /// NOTE: The range is _inclusive_: if the transaction that belongs to `id` it field be the
+    /// first value.
+    pub(crate) fn descendant_txs_mut<'a, 'b: 'a>(
+        &'a mut self,
+        id: &'b TransactionId,
+    ) -> impl Iterator<Item = (&'a TransactionId, &'a mut PoolInternalTransaction)> + 'a {
+        self.txs.range_mut(id..).take_while(|(other, _)| id.sender == other.sender)
     }
 
     // TODO:
@@ -446,9 +742,9 @@ impl TransactionId {
         }
     }
 
-    pub fn ancestor(&self, on_chain_nonce: u64) -> Option<Self>{
-        (self.nonce > on_chain_nonce)
-            .then(|| Self::new(self.sender, self.nonce.saturating_sub(1)))
+    pub fn ancestor(tx_nonce: u64, on_chain_nonce: u64, signer: Address) -> Option<Self>{
+        (tx_nonce > on_chain_nonce)
+            .then(|| Self::new(signer, tx_nonce.saturating_sub(1)))
     }
 
     pub fn unchecked_ancestor(&self) -> Option<Self> {
@@ -950,3 +1246,208 @@ impl Transaction for MockTransaction {
         }
     }
 }
+
+// -----state.rs-----
+
+bitflags::bitflags! {
+    /// Marker to represents the current state of a transaction in the pool and from which the corresponding sub-pool is derived, depending on what bits are set.
+    ///
+    /// This mirrors [erigon's ephemeral state field](https://github.com/ledgerwatch/erigon/wiki/Transaction-Pool-Design#ordering-function).
+    ///
+    /// The [SubPool] the transaction belongs to is derived from its state and determined by the following sequential checks:
+    ///
+    /// - If it satisfies the [TxState::PENDING_POOL_BITS] it belongs in the pending sub-pool: [SubPool::Pending].
+    /// - If it is an EIP-4844 blob transaction it belongs in the blob sub-pool: [SubPool::Blob].
+    /// - If it satisfies the [TxState::BASE_FEE_POOL_BITS] it belongs in the base fee sub-pool: [SubPool::BaseFee].
+    ///
+    /// Otherwise, it belongs in the queued sub-pool: [SubPool::Queued].
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, PartialOrd, Ord)]
+    pub(crate) struct TxState: u8 {
+        /// Set to `1` if all ancestor transactions are pending.
+        const NO_PARKED_ANCESTORS = 0b10000000;
+        /// Set to `1` of the transaction is either the next transaction of the sender (on chain nonce == tx.nonce) or all prior transactions are also present in the pool.
+        const NO_NONCE_GAPS = 0b01000000;
+        /// Bit derived from the sender's balance.
+        ///
+        /// Set to `1` if the sender's balance can cover the maximum cost for this transaction (`feeCap * gasLimit + value`).
+        /// This includes cumulative costs of prior transactions, which ensures that the sender has enough funds for all max cost of prior transactions.
+        const ENOUGH_BALANCE = 0b00100000;
+        /// Bit set to true if the transaction has a lower gas limit than the block's gas limit.
+        const NOT_TOO_MUCH_GAS = 0b00010000;
+        /// Covers the Dynamic fee requirement.
+        ///
+        /// Set to 1 if `maxFeePerGas` of the transaction meets the requirement of the pending block.
+        const ENOUGH_FEE_CAP_BLOCK = 0b00001000;
+        /// Covers the dynamic blob fee requirement, only relevant for EIP-4844 blob transactions.
+        ///
+        /// Set to 1 if `maxBlobFeePerGas` of the transaction meets the requirement of the pending block.
+        const ENOUGH_BLOB_FEE_CAP_BLOCK = 0b00000100;
+        /// Marks whether the transaction is a blob transaction.
+        ///
+        /// We track this as part of the state for simplicity, since blob transactions are handled differently and are mutually exclusive with normal transactions.
+        const BLOB_TRANSACTION = 0b00000010;
+
+        const PENDING_POOL_BITS = Self::NO_PARKED_ANCESTORS.bits() | Self::NO_NONCE_GAPS.bits() | Self::ENOUGH_BALANCE.bits() | Self::NOT_TOO_MUCH_GAS.bits() |  Self::ENOUGH_FEE_CAP_BLOCK.bits() | Self::ENOUGH_BLOB_FEE_CAP_BLOCK.bits();
+
+        const BASE_FEE_POOL_BITS = Self::NO_PARKED_ANCESTORS.bits() | Self::NO_NONCE_GAPS.bits() | Self::ENOUGH_BALANCE.bits() | Self::NOT_TOO_MUCH_GAS.bits();
+
+        const QUEUED_POOL_BITS  = Self::NO_PARKED_ANCESTORS.bits();
+
+        const BLOB_POOL_BITS  = Self::BLOB_TRANSACTION.bits();
+    }
+}
+
+// === impl TxState ===
+
+impl TxState {
+    /// The state of a transaction is considered `pending`, if the transaction has:
+    ///   - _No_ parked ancestors
+    ///   - enough balance
+    ///   - enough fee cap
+    ///   - enough blob fee cap
+    #[inline]
+    pub(crate) const fn is_pending(&self) -> bool {
+        self.bits() >= Self::PENDING_POOL_BITS.bits()
+    }
+
+    /// Whether this transaction is a blob transaction.
+    #[inline]
+    pub(crate) const fn is_blob(&self) -> bool {
+        self.contains(Self::BLOB_TRANSACTION)
+    }
+
+    /// Returns `true` if the transaction has a nonce gap.
+    #[inline]
+    pub(crate) const fn has_nonce_gap(&self) -> bool {
+        !self.intersects(Self::NO_NONCE_GAPS)
+    }
+}
+
+/// Identifier for the transaction Sub-pool
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
+#[repr(u8)]
+pub enum SubPool {
+    // Queued pool holds transactions that cannot be added to Pending due to nonce gaps or lack of funds
+    Queued = 0,
+    // Pending pool contains transactions that can be executed on the current statex
+    Pending
+}
+
+// === impl SubPool ===
+
+impl SubPool {
+    /// Whether this transaction is to be moved to the pending sub-pool.
+    #[inline]
+    pub const fn is_pending(&self) -> bool {
+        matches!(self, Self::Pending)
+    }
+
+    /// Whether this transaction is in the queued pool.
+    #[inline]
+    pub const fn is_queued(&self) -> bool {
+        matches!(self, Self::Queued)
+    }
+
+    // /// Whether this transaction is in the base fee pool.
+    // #[inline]
+    // pub const fn is_base_fee(&self) -> bool {
+    //     matches!(self, Self::BaseFee)
+    // }
+
+    // /// Whether this transaction is in the blob pool.
+    // #[inline]
+    // pub const fn is_blob(&self) -> bool {
+    //     matches!(self, Self::Blob)
+    // }
+
+    /// Returns whether this is a promotion depending on the current sub-pool location.
+    #[inline]
+    pub fn is_promoted(&self, other: Self) -> bool {
+        self > &other
+    }
+}
+
+impl From<TxState> for SubPool {
+    fn from(value: TxState) -> Self {
+        if value.is_pending() {
+            return Self::Pending
+        }
+        // if value.is_blob() {
+        //     // all _non-pending_ blob transactions are in the blob sub-pool
+        //     return Self::Blob
+        // }
+        if value.bits() < TxState::BASE_FEE_POOL_BITS.bits() {
+            return Self::Queued
+        }
+        // TODO: Double check this
+        Self::Queued
+        // Self::BaseFee
+    }
+}
+
+// #[cfg(test)]
+// mod tests {
+//     use super::*;
+
+//     #[test]
+//     fn test_promoted() {
+//         assert!(SubPool::BaseFee.is_promoted(SubPool::Queued));
+//         assert!(SubPool::Pending.is_promoted(SubPool::BaseFee));
+//         assert!(SubPool::Pending.is_promoted(SubPool::Queued));
+//         assert!(SubPool::Pending.is_promoted(SubPool::Blob));
+//         assert!(!SubPool::BaseFee.is_promoted(SubPool::Pending));
+//         assert!(!SubPool::Queued.is_promoted(SubPool::BaseFee));
+//     }
+
+//     #[test]
+//     fn test_tx_state() {
+//         let mut state = TxState::default();
+//         state |= TxState::NO_NONCE_GAPS;
+//         assert!(state.intersects(TxState::NO_NONCE_GAPS))
+//     }
+
+//     #[test]
+//     fn test_tx_queued() {
+//         let state = TxState::default();
+//         assert_eq!(SubPool::Queued, state.into());
+
+//         let state = TxState::NO_PARKED_ANCESTORS |
+//             TxState::NO_NONCE_GAPS |
+//             TxState::NOT_TOO_MUCH_GAS |
+//             TxState::ENOUGH_FEE_CAP_BLOCK;
+//         assert_eq!(SubPool::Queued, state.into());
+//     }
+
+//     #[test]
+//     fn test_tx_pending() {
+//         let state = TxState::PENDING_POOL_BITS;
+//         assert_eq!(SubPool::Pending, state.into());
+//         assert!(state.is_pending());
+
+//         let bits = 0b11111100;
+//         let state = TxState::from_bits(bits).unwrap();
+//         assert_eq!(SubPool::Pending, state.into());
+//         assert!(state.is_pending());
+
+//         let bits = 0b11111110;
+//         let state = TxState::from_bits(bits).unwrap();
+//         assert_eq!(SubPool::Pending, state.into());
+//         assert!(state.is_pending());
+//     }
+
+//     #[test]
+//     fn test_blob() {
+//         let mut state = TxState::PENDING_POOL_BITS;
+//         state.insert(TxState::BLOB_TRANSACTION);
+//         assert!(state.is_pending());
+
+//         state.remove(TxState::ENOUGH_BLOB_FEE_CAP_BLOCK);
+//         assert!(state.is_blob());
+//         assert!(!state.is_pending());
+
+//         state.insert(TxState::ENOUGH_BLOB_FEE_CAP_BLOCK);
+//         state.remove(TxState::ENOUGH_FEE_CAP_BLOCK);
+//         assert!(state.is_blob());
+//         assert!(!state.is_pending());
+//     }
+// }

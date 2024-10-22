@@ -2695,6 +2695,7 @@ name = "t1-sequencer-project"
 version = "0.1.0"
 dependencies = [
  "alloy",
+ "bitflags",
  "thiserror",
 ]
 
