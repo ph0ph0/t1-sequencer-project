@@ -6,3 +6,6 @@ edition = "2021"
 [dependencies]
 # ethereum
 alloy = { version = "0.4", features = ["full", "getrandom"] }
+
+#misc
+thiserror = "1.0"

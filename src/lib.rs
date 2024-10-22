@@ -40,7 +40,7 @@ where
 {
     config: PoolConfig,
     /// All transactions in the pool, grouped by sender, ordered by nonce
-    all_transactions: BTreeMap<TransactionId, Arc<dyn Transaction>>,
+    all_transactions: AllTransactions<T>,
     ///All transactions that can be executed on the current chain state
     pending_transactions: PendingPool<T, O>,
     /// Struct that holds transactions ordered by priority fee and respects nonce ordering
@@ -59,31 +59,62 @@ where
 {
     pub(crate) fn add_transaction(
         &mut self,
-        tx: T,
+        tx: TxEnvelope,
         on_chain_balance: U256,
         on_chain_nonce: u64
-    ) {
+    ) -> PoolResult<AddedTransaction<T>>{
         // Check to see if the new tx already exists in the pool
-        if self.contains(tx.hash()) {
-            return Err(PoolError::new(*tx.hash(), PoolErrorKind::AlreadyImported))
+        if self.contains(tx.tx_hash()) {
+            return Err(PoolError::new(*tx.tx_hash(), PoolErrorKind::AlreadyImported))
         }
+
+        Ok(AddedTransaction::Pending(tx))
     }
 
     pub(crate) fn contains(&self, tx_hash: &TxHash) -> bool {
-        self.all_transactions.contains_key(tx_hash)
+        self.all_transactions.contains(tx_hash)
+    }
+    
+}
+
+// TODO: Move this somewhere that makes sense
+pub enum AddedTransaction<T> 
+where 
+    T: Transaction + PartialEq + Eq + PartialOrd + Ord
+{
+    Pending(T),
+
+    Queued {
+        transaction: Arc<T>,
+        replaced: Option<Arc<T>>,
+        subpool: SubPool
     }
 }
 
-pub struct AllTransactions {
+pub enum SubPool {
+    // Queued pool holds transactions that cannot be added to Pending due to nonce gaps or lack of funds
+    Queued = 0,
+    // Pending pool contains transactions that can be executed on the current statex
+    Pending
+}
+
+// TODO: Move this somewhere that makes sense
+pub struct AllTransactions<T> 
+where 
+    T: Transaction + PartialEq + Eq + PartialOrd + Ord
+{
     /// All transactions in the pool, grouped by sender, orderd by nonce
-    txs: BTreeMap<TransactionId, Arc<dyn Transaction>>,
+    txs: BTreeMap<TransactionId, Arc<T>>,
     /// All transactions in the pool ordered by hash
-    by_hash: HashMap<TxHash, Arc<dyn Transaction>>,
+    by_hash: HashMap<TxHash, Arc<T>>,
     /// Keeps track of the number of transactions by sender currently in the system
     tx_counter: HashMap<Address, usize>,
 }
 
-impl AllTransactions {
+impl<T> AllTransactions<T> 
+where 
+    T: Transaction + PartialEq + Eq + PartialOrd + Ord
+{
     /// Creates new instance
     fn new(&self) -> Self {
         Self {
@@ -428,11 +459,37 @@ mod tests {
     }
 }
 
+// error.rs
+
+use thiserror;
+
+/// Transaction pool result type.
+pub type PoolResult<T> = Result<T, PoolError>;
+
+/// Transaction pool error
+#[derive(Debug, thiserror::Error)]
+#[error("[{hash}]: {kind}")]
+pub struct PoolError {
+    /// Hash of the transaction that caused the error
+    pub hash: TxHash,
+    /// The kind of error
+    pub kind: PoolErrorKind
+}
+
+/// The kind of pool error 
+#[derive(Debug, thiserror::Error)]
+pub enum PoolErrorKind {
+    // Transaction already exists in the pool
+    #[error("already imported")]
+    AlreadyImported,
+}
+
+
 // -----test_utils/mock.rs-----
 
 use alloy::consensus::{
     //Transaction,
-    TxType
+    TxEnvelope, TxType
 };
 use alloy::primitives::{
     B256, 
