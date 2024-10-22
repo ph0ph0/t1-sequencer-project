@@ -25,7 +25,8 @@ use alloy::primitives::aliases::TxHash;
 // TODO: Add derive
 pub struct PoolConfig {
     /// Max number of transactions a user can have in the pool
-    pub max_account_slots: usize
+    pub max_account_slots: usize,
+    pub block_gas_limit: u64
 }
 
 // pub struct PoolMetrics { TODO: Needed?
@@ -69,7 +70,7 @@ where
         // TODO: Update user info?
 
         // TODO: Add match statement
-        self.all_transactions.insert_tx(tx, on_chain_balance, on_chain_nonce);
+        self.insert_tx(tx, on_chain_balance, on_chain_nonce);
 
         // TODO: Return correct result
         Ok(AddedTransaction::Pending(tx))
@@ -79,7 +80,63 @@ where
     pub(crate) fn contains(&self, tx_hash: &TxHash) -> bool {
         self.all_transactions.contains(tx_hash)
     }
-    
+
+    pub(crate) fn insert_tx(
+        &mut self,
+        transaction: TxEnvelope,
+        on_chain_balance: U256,
+        on_chain_nonce: u64,
+    ) -> InsertResult {
+        
+        // Get the Signed<TxEip1559> type
+        let signed_tx_ref = match transaction {
+            TxEnvelope::Eip1559(signed_tx) => Ok(signed_tx),
+            _ => Err(InsertErr::UnknownTransactionType { transaction: Arc::new(transaction) })
+        }?;
+
+        // Get the TxEip1559 type
+        let unsigned_tx_ref = signed_tx_ref.tx();
+
+        assert!(on_chain_nonce <= unsigned_tx_ref.nonce, "Invalid transaction");
+
+        // Convert transaction to underlying Transaction type
+        let signer = transaction
+            .recover_signer()
+            .map_err(|signature_error| InsertErr::SignatureError { signature_error })?;
+
+        let transaction = self.ensure_valid(&unsigned_tx_ref.gas_limit(), &signer)?;
+
+
+        // TODO: Return correct result
+        Ok(InsertOk{transaction, move_to: state.into(), state, replaced_tx, updates})
+    }
+
+    /// Validation checks for new transaction
+    /// 
+    /// Enforces additional rules:
+    /// - Spam protection: reject transactions from senders that have exhausted their slot capacity
+    /// - Gas limit: reject transactions that exceed a block's maximum gas
+    fn ensure_valid(
+        &self,
+        tx_gas_limit: u64,
+        signer: &Address,
+        transaction: TxEnvelope
+    ) -> Result<TxEnvelope, InsertErr> {
+        let user_tx_count = self.all_transactions.tx_counter.get(signer).copied().unwrap_or_default();
+
+        if user_tx_count >= self.config.max_account_slots {
+            return Err(InsertErr::ExceededSenderTransactionsCapacity { transaction: Arc::new(transaction) })
+        }
+
+        if tx_gas_limit > self.config.block_gas_limit {
+            return Err(InsertErr::TxGasLimitMoreThanAvailableBlockGas {
+                block_gas_limit: self.config.block_gas_limit,
+                tx_gas_limit,
+                transaction: Arc::new(transaction),
+            })
+        }
+        Ok(transaction)
+    }
 }
 
 // TODO: Move this somewhere that makes sense
@@ -104,8 +161,55 @@ pub enum SubPool {
     Pending
 }
 
+pub(crate) type InsertResult = Result<InsertOk, InsertErr>;
+
+pub struct InsertOk {
+    /// Reference to the transaction
+    tranasction: Arc<TxEnvelope>,
+    /// The pool to move the transaction to
+    move_to: SubPool,
+    /// State of the inserted transaction
+    state: TxState,
+    /// The transaction that was replaced
+    replaced_tx: Option<(Arc<TxEnvelope>, SubPool)>,
+    /// Additional updates to transactions affected by this change
+    updates: Vec<PoolUpdate>
+}
+
+pub(crate) enum InsertErr {
+    /// Unkown transaction error, currently only Eip1559 transactions are handled
+    UnknownTransactionType { transaction: Arc<TxEnvelope> },
+    /// Error in the signature of the transaction
+    SignatureError {signature_error: SignatureError},
+    /// Attempted to replace existing transaction, but was underpriced
+    Underpriced {
+        transaction: Arc<TxEnvelope>,
+        #[allow(dead_code)]
+        existing: TxHash,
+    },
+    /// Attempted to insert a transaction that would overdraft the sender's balance at the time of
+    /// insertion.
+    Overdraft { transaction: Arc<TxEnvelope> },
+    /// The transactions feeCap is lower than the chain's minimum fee requirement.
+    ///
+    /// See also [`MIN_PROTOCOL_BASE_FEE`]
+    FeeCapBelowMinimumProtocolFeeCap { transaction: Arc<TxEnvelope>, fee_cap: u128 },
+    /// Sender currently exceeds the configured limit for max account slots.
+    ///
+    /// The sender can be considered a spammer at this point.
+    ExceededSenderTransactionsCapacity { transaction: Arc<TxEnvelope> },
+    /// Transaction gas limit exceeds block's gas limit
+    TxGasLimitMoreThanAvailableBlockGas {
+        transaction: Arc<TxEnvelope>,
+        block_gas_limit: u64,
+        tx_gas_limit: u64,
+    },
+}
+
 
 // -----all_transactions.rs----
+
+use alloy::primitives::SignatureError;
 
 pub struct AllTransactions
 where 
@@ -150,18 +254,6 @@ impl AllTransactions
         }
     }
 
-    pub(crate) fn insert_tx(
-        &mut self,
-        transaction: TxEnvelope,
-        on_chain_balance: U256,
-        on_chain_nonce: u64,
-    ) -> InsertResult {
-        let transaction_nonce: Option<u64> = match transaction {
-            TxEnvelope::Eip1559(signed_tx) => Ok(signed_tx.tx().nonce),
-            _ => Err(PoolError::new(*transaction.tx_hash(), PoolErrorKind::UnknownTransactionType))
-        };
-    }
-
     // TODO:
     // pub(crate) update(
     //     &mut self,
@@ -171,46 +263,7 @@ impl AllTransactions
     // }
 }
 
-pub(crate) type InsertResult = Result<InsertOk, InsertErr>;
 
-pub struct InsertOk {
-    /// Reference to the transaction
-    tranasction: Arc<TxEnvelope>,
-    /// The pool to move the transaction to
-    move_to: SubPool,
-    /// State of the inserted transaction
-    state: TxState,
-    /// The transaction that was replaced
-    replaced_tx: Option<(Arc<TxEnvelope>, SubPool)>,
-    /// Additional updates to transactions affected by this change
-    updates: Vec<PoolUpdate>
-}
-
-pub(crate) enum InsertErr {
-    /// Attempted to replace existing transaction, but was underpriced
-    Underpriced {
-        transaction: Arc<TxEnvelope>,
-        #[allow(dead_code)]
-        existing: TxHash,
-    },
-    /// Attempted to insert a transaction that would overdraft the sender's balance at the time of
-    /// insertion.
-    Overdraft { transaction: Arc<TxEnvelope> },
-    /// The transactions feeCap is lower than the chain's minimum fee requirement.
-    ///
-    /// See also [`MIN_PROTOCOL_BASE_FEE`]
-    FeeCapBelowMinimumProtocolFeeCap { transaction: Arc<TxEnvelope>, fee_cap: u128 },
-    /// Sender currently exceeds the configured limit for max account slots.
-    ///
-    /// The sender can be considered a spammer at this point.
-    ExceededSenderTransactionsCapacity { transaction: Arc<TxEnvelope> },
-    /// Transaction gas limit exceeds block's gas limit
-    TxGasLimitMoreThanAvailableBlockGas {
-        transaction: Arc<TxEnvelope>,
-        block_gas_limit: u64,
-        tx_gas_limit: u64,
-    },
-}
 
 // -----updates.rs
 
