@@ -80,7 +80,26 @@ where
 
         match self.insert_tx(tx, on_chain_balance, on_chain_nonce) {
             Ok(InsertOk {transaction, move_to, replaced_tx, updates, ..}) => {
+                // replace the new tx and remove the replaced in the subpool(s)
+                self.add_new_transaction(transaction.clone(), replaced_tx.clone(), move_to);
+                // Update inserted transactions metric
+                let UpdateOutcome { promoted, discarded } = self.process_updates(updates);
 
+                let replaced = replaced_tx.map(|(tx, _)| tx);
+
+                // This transaction was moved to the pending pool.
+                let res = if move_to.is_pending() {
+                    AddedTransaction::Pending(AddedPendingTransaction {
+                        transaction,
+                        promoted,
+                        discarded,
+                        replaced,
+                    })
+                } else {
+                    AddedTransaction::Queued { transaction, subpool: move_to, replaced }
+                };
+
+                return Ok(res);
             }
             Err(err) => {
 
@@ -404,9 +423,8 @@ where
     ) {
         if let Some((replaced, replaced_pool)) = replaced {
 
-            let replaced_transaction_id = TransactionId::new(replaced.recover_signer().unwrap(), replaced.nonce());
             // Remove the replaced transaction
-            self.remove_from_subpool(replaced_pool, &replaced_transaction_id);
+            self.remove_from_subpool(replaced_pool, &replaced.into());
         }
 
         self.add_transaction_to_subpool(pool, transaction)
@@ -440,6 +458,62 @@ where
                 self.pending_transactions.add_transaction(tx, self.config.pending_base_fee);
             }
         }
+    }
+
+    /// Maintenance task to apply a series of updates.
+    ///
+    /// This will move/discard the given transaction according to the `PoolUpdate`
+    fn process_updates(&mut self, updates: Vec<PoolUpdate>) -> UpdateOutcome {
+        let mut outcome = UpdateOutcome::default();
+        for PoolUpdate { id, hash, current, destination } in updates {
+            match destination {
+                Destination::Discard => {
+                    // remove the transaction from the pool and subpool
+                    if let Some(tx) = self.prune_transaction_by_hash(&hash) {
+                        outcome.discarded.push(tx);
+                    }
+                }
+                Destination::Pool(move_to) => {
+                    debug_assert_ne!(&move_to, &current, "destination must be different");
+                    let moved = self.move_transaction(current, move_to, &id);
+                    if matches!(move_to, SubPool::Pending) {
+                        if let Some(tx) = moved {
+                            outcome.promoted.push(tx);
+                        }
+                    }
+                }
+            }
+        }
+        outcome
+    }
+
+    /// This removes the transaction from the pool and advances any descendant state inside the
+    /// subpool.
+    ///
+    /// This is intended to be used when a transaction is included in a block,
+    /// [`Self::on_canonical_state_change`]
+    fn prune_transaction_by_hash(
+        &mut self,
+        tx_hash: &B256,
+    ) -> Option<Arc<TxEnvelope>> {
+        let (tx, pool) = self.all_transactions.remove_transaction_by_hash(tx_hash)?;
+
+        self.remove_from_subpool(pool, &tx.into())
+    }
+
+    /// Moves a transaction from one sub pool to another.
+    ///
+    /// This will remove the given transaction from one sub-pool and insert it into the other
+    /// sub-pool.
+    fn move_transaction(
+        &mut self,
+        from: SubPool,
+        to: SubPool,
+        id: &TransactionId,
+    ) -> Option<Arc<TxEnvelope>> {
+        let tx = self.remove_from_subpool(from, id)?;
+        self.add_transaction_to_subpool(to, tx.clone());
+        Some(tx)
     }
 }
 
@@ -486,13 +560,24 @@ impl PoolInternalTransaction {
 // TODO: Move this somewhere that makes sense
 pub enum AddedTransaction
 {
-    Pending(TxEnvelope),
+    Pending(AddedPendingTransaction),
 
     Queued {
-        transaction: TxEnvelope,
-        replaced: Option<TxEnvelope>,
+        transaction: Arc<TxEnvelope>,
+        replaced: Option<Arc<TxEnvelope>>,
         subpool: SubPool
     }
+}
+
+pub struct AddedPendingTransaction {
+    /// Inserted transaction.
+    transaction: Arc<TxEnvelope>,
+    /// Replaced transaction.
+    replaced: Option<Arc<TxEnvelope>>,
+    /// transactions promoted to the pending queue
+    promoted: Vec<Arc<TxEnvelope>>,
+    /// transactions that failed and became discarded
+    discarded: Vec<Arc<TxEnvelope>>,
 }
 
 pub(crate) type InsertResult = Result<InsertOk, InsertErr>;
@@ -544,6 +629,21 @@ pub(crate) enum InsertErr {
         block_gas_limit: u64,
         tx_gas_limit: u64,
     },
+}
+
+/// Tracks the result after updating the pool
+#[derive(Debug)]
+pub(crate) struct UpdateOutcome {
+    /// transactions promoted to the pending pool
+    pub(crate) promoted: Vec<Arc<TxEnvelope>>,
+    /// transaction that failed and were discarded
+    pub(crate) discarded: Vec<Arc<TxEnvelope>>,
+}
+
+impl Default for UpdateOutcome {
+    fn default() -> Self {
+        Self { promoted: vec![], discarded: vec![] }
+    }
 }
 
 
@@ -603,6 +703,19 @@ impl AllTransactions
         id: &'b TransactionId,
     ) -> impl Iterator<Item = (&'a TransactionId, &'a mut PoolInternalTransaction)> + 'a {
         self.txs.range_mut(id..).take_while(|(other, _)| id.sender == other.sender)
+    }
+
+    /// Removes a transaction from the set using its hash.
+    pub(crate) fn remove_transaction_by_hash(
+        &mut self,
+        tx_hash: &B256,
+    ) -> Option<(Arc<TxEnvelope>, SubPool)> {
+        let tx = self.by_hash.remove(tx_hash)?;
+        let tx_id = TransactionId::from(Arc::clone(&tx));
+        let internal = self.txs.remove(&tx_id)?;
+        // decrement the counter for the sender.
+        self.tx_decr(TransactionId::from(Arc::clone(&tx)).sender);
+        Some((tx, internal.subpool))
     }
 
     // TODO:
@@ -1046,6 +1159,12 @@ impl TransactionId {
     #[inline]
     pub const fn next_nonce(&self) -> u64 {
         self.nonce + 1
+    }
+}
+
+impl From<Arc<TxEnvelope>> for TransactionId {
+    fn from(tx: Arc<TxEnvelope>) -> Self {
+        Self::new(tx.recover_signer().unwrap(), tx.nonce())
     }
 }
 
