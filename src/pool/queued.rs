@@ -106,13 +106,15 @@ pub struct QueuedPool {
     /// All transaction currently inside the pool grouped by sender and ordered by nonce
     by_id: BTreeMap<TransactionId, QueuedPoolTransaction>,
     /// All transactions sorted by their order function. The higher the better.
+    /// 
+    /// These are the transactions that could be promoted to pending
     best: BTreeSet<QueuedPoolTransaction>,
 
     /// Last submission_id for each sender, TODO: Do we need this?
     // last_sender_submission: BTreeSet<SubmissionSenderId>>,
 
     // TODO: Move up to Pool?
-    // Keeps track of the number of transactions in the pool by the sender and the last submission id.
+    /// Keeps track of the number of transactions in the pool by the sender and the last submission id.
     sender_transaction_count: HashMap<Address, SenderTransactionCount>
 }
 
@@ -199,3 +201,130 @@ impl QueuedPool {
         };
     }
 }
+
+impl Default for QueuedPool {
+    fn default() -> Self {
+        Self {
+            current_submission_id: 0,
+            by_id: BTreeMap::default(),
+            best: BTreeSet::default(),
+            sender_transaction_count: HashMap::default(),
+        }
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy::primitives::U256;
+    use crate::test_utils::helpers::{create_default_tx_and_sender, create_tx, create_tx_and_sender};
+    use crate::ordering::CoinbaseTipOrdering;
+
+    #[tokio::test]
+    async fn test_add_transaction() {
+        let mut pool = QueuedPool::default();
+        let (tx, sender, _) = create_default_tx_and_sender().await;
+        let id = TransactionId::from(tx.clone());
+
+        pool.add_transaction(tx.clone());
+
+        assert_eq!(pool.by_id.len(), 1);
+        assert_eq!(pool.best.len(), 1);
+        assert_eq!(pool.sender_transaction_count.len(), 1);
+        assert_eq!(pool.sender_transaction_count[&sender].count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_remove_transaction() {
+        let mut pool = QueuedPool::default();
+        let (tx, _, _) = create_default_tx_and_sender().await;
+        let id = TransactionId::from(tx.clone());
+
+        pool.add_transaction(tx.clone());
+        let removed_tx = pool.remove_transaction(&id);
+
+        assert!(removed_tx.is_some());
+        assert_eq!(pool.by_id.len(), 0);
+        assert_eq!(pool.best.len(), 0);
+        assert_eq!(pool.sender_transaction_count.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_transaction_ordering() {
+        let mut pool = QueuedPool::default();
+        let (tx1, sender1, _) = create_default_tx_and_sender().await; // max_fee_per_gas = 10
+        let (tx2, sender2, _) = create_tx_and_sender(20, 30, 100000, U256::ZERO, 0).await; // max_fee_per_gas = 20
+
+        // Add transactions to the pool
+        pool.add_transaction(tx1.clone());
+        pool.add_transaction(tx2.clone());
+
+        let ordered_txs: Vec<_> = pool.best.iter().collect();
+        assert_eq!(ordered_txs.len(), 2);
+        assert_eq!(ordered_txs[0].transaction.0.max_fee_per_gas(), 20);
+        assert_eq!(ordered_txs[1].transaction.0.max_fee_per_gas(), 10);
+
+        // Add some more transactions
+        let (tx3, sender3, _) = create_tx_and_sender(30, 40, 100000, U256::ZERO, 0).await; // max_fee_per_gas = 30
+        let (tx4, sender4, _) = create_tx_and_sender(40, 50, 100000, U256::ZERO, 0).await; // max_fee_per_gas = 40
+
+        pool.add_transaction(tx3.clone());
+        pool.add_transaction(tx4.clone());
+
+        let ordered_txs: Vec<_> = pool.best.iter().collect();
+        assert_eq!(ordered_txs.len(), 4);
+        assert_eq!(ordered_txs[0].transaction.0.max_fee_per_gas(), 40);
+        assert_eq!(ordered_txs[1].transaction.0.max_fee_per_gas(), 30);
+        assert_eq!(ordered_txs[2].transaction.0.max_fee_per_gas(), 20);
+        assert_eq!(ordered_txs[3].transaction.0.max_fee_per_gas(), 10);
+    }
+
+    #[tokio::test]
+    async fn test_sender_transaction_count() {
+        let mut pool = QueuedPool::default();
+        let (tx1, sender1, pk1) = create_default_tx_and_sender().await;
+        let (tx2, sender2, pk2) = create_tx_and_sender(20, 30, 100000, U256::ZERO, 0).await;
+        let tx3 = create_tx(pk1, sender1, 30, 40, 100000, U256::ZERO, 1).await;
+        let tx4 = create_tx(pk2, sender2, 40, 50, 100000, U256::ZERO, 1).await;
+
+        // Add transactions to the pool
+        pool.add_transaction(tx1.clone());
+        pool.add_transaction(tx2.clone());
+        pool.add_transaction(tx3.clone());
+        pool.add_transaction(tx4.clone());
+
+        // Check sender counts are all 2
+        assert_eq!(pool.sender_transaction_count[&sender1].count, 2);
+        assert_eq!(pool.sender_transaction_count[&sender2].count, 2);
+
+        // Remove tx1 from the pool
+        let id1 = TransactionId::from(tx1.clone());
+        pool.remove_transaction(&id1);
+
+        // Sender1 should now have 1 transaction
+        assert_eq!(pool.sender_transaction_count[&sender1].count, 1);
+
+        // Remove tx2 from the pool
+        let id2 = TransactionId::from(tx2.clone());
+        pool.remove_transaction(&id2);
+
+        // Sender2 should now have 1 transaction
+        assert_eq!(pool.sender_transaction_count[&sender2].count, 1);
+
+        // Remove tx3 from the pool
+        let id3 = TransactionId::from(tx3.clone());
+        pool.remove_transaction(&id3);
+
+        // Sender1 should now have 0 transactions
+        assert!(!pool.sender_transaction_count.contains_key(&sender1));
+
+        // Remove tx4 from the pool
+        let id4 = TransactionId::from(tx4.clone());
+        pool.remove_transaction(&id4);
+
+        // Sender2 should now have 0 transactions
+        assert!(!pool.sender_transaction_count.contains_key(&sender2));
+    }
+}
+
