@@ -55,7 +55,7 @@ where
     /// Represents the best subset of transaction from pending_transactions
     transaction_sequence: TransactionSequence<O>, // TODO: Do we need this?
     /// All transactions that cannot be executed on current state but might be able to in the future
-    queued_transactions: QueuedPool<QueuedOrdering>,
+    queued_transactions: QueuedPool,
     // Metrics for the pool and subpool
     // metrics: PoolMetrics TODO: Needed?
 }
@@ -707,18 +707,20 @@ where
 
 // -----queued.rs-----
 
+use std::collections::hash_map::Entry as HashMapEntry;
+
 #[derive(PartialOrd, Eq, PartialEq)]
-pub struct QueuedPoolTransaction<T: QueuedOrd> {
+pub struct QueuedPoolTransaction {
 
     /// Id to indicate when transaction was added to pool
     submission_id: u64,
     /// The transaction
-    transaction: T
+    transaction: QueuedOrderedTransaction
 }
 
-impl<T: QueuedOrd> Ord for QueuedPoolTransaction<T> {
+impl Ord for QueuedPoolTransaction {
     fn cmp(&self, other: &Self) -> Ordering {
-        // First, compare transactions by their own Ord impl (see `impl Ord for QueuedOrdering`)
+        // First, compare transactions by their own Ord impl (see `impl Ord for QueuedOrderedTransaction`)
         // Then compare the submission_ids.
         self.transaction
             .cmp(&other.transaction)
@@ -726,20 +728,16 @@ impl<T: QueuedOrd> Ord for QueuedPoolTransaction<T> {
     }
 }
 
-pub trait QueuedOrd: Ord {
-    type Transaction: alloy::consensus::Transaction;
-}
+/// Type wrapper for an alloy TxEnvelope in the queue, allowing them to be ordered by max_fee_per_gas then submission_id (see Ord implemntation below)
+pub struct QueuedOrderedTransaction(TxEnvelope);
 
-/// Type wrapper for an alloy TxEnvelope in the queue, allowing them to be ordered by max_fee_per_gas then submission_id (see Ord implemntation below and impl<T: QueuedOrd> Ord for QueuedPoolTransaction<T>)
-pub struct QueuedOrdering(TxEnvelope);
-
-impl QueuedOrdering {
+impl QueuedOrderedTransaction {
     pub fn max_fee_per_gas(&self) -> u128 {
         self.0.max_fee_per_gas()
     }
 }
 
-impl Ord for QueuedOrdering {
+impl Ord for QueuedOrderedTransaction {
     // Sort in reverse order (ie higher gas fees towards end of set)
     fn cmp(&self, other: &Self) -> Ordering {
         other.max_fee_per_gas()
@@ -747,34 +745,29 @@ impl Ord for QueuedOrdering {
     }
 }
 
-impl PartialOrd for QueuedOrdering {
+impl PartialOrd for QueuedOrderedTransaction {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl PartialEq for QueuedOrdering {
+impl PartialEq for QueuedOrderedTransaction {
     fn eq(&self, other: &Self) -> bool {
         self.cmp(other) == Ordering::Equal
     }
 }
 
-impl Eq for QueuedOrdering {}
-
-impl QueuedOrd for QueuedOrdering {
-    // TODO: Is this needed
-    type Transaction = TxEnvelope;
-}
+impl Eq for QueuedOrderedTransaction {}
 
 
 // TODO: Derive
-pub struct QueuedPool<T: QueuedOrd> {
+pub struct QueuedPool {
     /// Keeps track of the last transaction submitted to the pool
     current_submission_id: u64,
     /// All transaction currently inside the pool grouped by sender and ordered by nonce
-    by_id: BTreeMap<TransactionId, QueuedPoolTransaction<T>>,
+    by_id: BTreeMap<TransactionId, QueuedPoolTransaction>,
     /// All transactions sorted by their order function. The higher the better.
-    best: BTreeSet<QueuedPoolTransaction<T>>,
+    best: BTreeSet<QueuedPoolTransaction>,
 
     /// Last submission_id for each sender, TODO: Do we need this?
     // last_sender_submission: BTreeSet<SubmissionSenderId>>,
@@ -784,12 +777,30 @@ pub struct QueuedPool<T: QueuedOrd> {
     sender_transaction_count: HashMap<Address, SenderTransactionCount>
 }
 
-impl<T: QueuedOrd> QueuedPool<T> {
+impl QueuedPool {
     fn remove_transaction(&mut self, id: &TransactionId) -> Option<Arc<TxEnvelope>> {
         let tx = self.by_id.remove(id)?;
         self.best.remove(&tx);
-        self.remove_sender_count(tx.transaction.recover_signer());
-        Some(tx.into())
+        self.remove_sender_count(tx.transaction.0.recover_signer().unwrap());
+        Some(tx.transaction.0.into())
+    }
+
+    fn remove_sender_count(&mut self, sender: Address) {
+        match self.sender_transaction_count.entry(sender) {
+            HashMapEntry::Occupied(mut entry) => {
+                let value = entry.get_mut();
+                value.count -= 1;
+                if value.count == 0 {
+                    entry.remove()
+                } else {
+                    return
+                }
+            }
+            HashMapEntry::Vacant(_) => {
+                // This should never happen because the bisection between the two maps
+                unreachable!("sender count not found {:?}", sender);
+            }
+        };
     }
 }
 
