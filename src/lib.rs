@@ -70,9 +70,13 @@ where
         on_chain_balance: U256,
         on_chain_nonce: u64
     ) -> PoolResult<AddedTransaction>{
+
+        let tx_hash = tx.tx_hash().clone();
         // Check to see if the new tx already exists in the pool
-        if self.contains(tx.tx_hash()) {
-            return Err(PoolError::new(*tx.tx_hash(), PoolErrorKind::AlreadyImported))
+        if self.contains(&tx_hash) {
+            return Err(PoolError::new(
+                tx_hash.clone(), 
+                PoolErrorKind::AlreadyImported))
         }
 
         // TODO: Update user info?
@@ -102,12 +106,58 @@ where
                 return Ok(res);
             }
             Err(err) => {
-
+                match err {
+                    InsertErr::UnknownTransactionType => {
+                        return Err(PoolError::new(
+                            tx_hash.clone(),
+                            PoolErrorKind::UnknownTransactionType,
+                        ));
+                    },
+                    InsertErr::InvalidTxNonce { on_chain_nonce, tx_nonce } => {
+                        return Err(PoolError::new(
+                            tx_hash.clone(),
+                            PoolErrorKind::InvalidTxNonce(on_chain_nonce, tx_nonce),
+                        ));
+                    },
+                    InsertErr::SignatureError => {
+                        return Err(PoolError::new(
+                            tx_hash.clone(),
+                            PoolErrorKind::SignatureError,
+                        ));
+                    },
+                    InsertErr::Underpriced { existing } => {
+                        return Err(PoolError::new(
+                            tx_hash.clone(),
+                            PoolErrorKind::ReplacementUnderpriced(existing),
+                        ));
+                    },
+                    InsertErr::FeeCapBelowMinimumProtocolFeeCap { fee_cap } => {
+                        return Err(PoolError::new(
+                            tx_hash.clone(),
+                            PoolErrorKind::FeeCapBelowMinimumProtocolFeeCap(fee_cap),
+                        ));
+                    }
+                    InsertErr::ExceededSenderTransactionsCapacity { address } => {
+                        return Err(PoolError::new(
+                            tx_hash.clone(),
+                            PoolErrorKind::SpammerExceededCapacity(address),
+                        ));
+                    }
+                    InsertErr::TxGasLimitMoreThanAvailableBlockGas {
+                        block_gas_limit,
+                        tx_gas_limit,
+                    } => {
+                        return Err(PoolError::new(
+                            tx_hash.clone(),
+                            PoolErrorKind::TxGasLimitMoreThanAvailableBlockGas(
+                                block_gas_limit,
+                                tx_gas_limit,
+                            )
+                        ));
+                    }
+                }
             }
         }
-
-        // TODO: Return correct result
-        Ok(AddedTransaction::Pending(tx))
     }
 
     /// Checks if the given tx_hash is present in the all_transactions pool
@@ -127,7 +177,7 @@ where
         // Get the Signed<TxEip1559> type
         let signed_tx = match &*transaction {
             TxEnvelope::Eip1559(signed_tx) => Ok(signed_tx),
-            _ => Err(InsertErr::UnknownTransactionType { transaction: Arc::clone(&transaction) })
+            _ => Err(InsertErr::UnknownTransactionType)
         }?;
 
         // Get the TxEip1559 type so we can access its properties (ie gas_limit, nonce etc)
@@ -136,7 +186,7 @@ where
         // Get transaction signer
         let signer = &transaction
             .recover_signer()
-            .map_err(|signature_error| InsertErr::SignatureError { signature_error })?;
+            .map_err(|_| InsertErr::SignatureError)?;
         // Get nonce
         let tx_nonce = unsigned_tx.nonce;
         // Get gas_limit
@@ -193,7 +243,7 @@ where
         let fee_cap = transaction.max_fee_per_gas();
 
         if fee_cap < self.config.minimal_protocol_basefee as u128 {
-            return Err(InsertErr::FeeCapBelowMinimumProtocolFeeCap { transaction, fee_cap })
+            return Err(InsertErr::FeeCapBelowMinimumProtocolFeeCap { fee_cap })
         }
         if fee_cap >= self.config.pending_base_fee as u128 {
             state.insert(TxState::ENOUGH_FEE_CAP_BLOCK);
@@ -223,7 +273,7 @@ where
                 // Get the Signed<TxEip1559> type for existing transaction
                 let signed_existing_tx_ref = match existing_transaction {
                     TxEnvelope::Eip1559(signed_tx) => Ok(signed_tx),
-                    _ => Err(InsertErr::UnknownTransactionType { transaction: Arc::clone(&transaction) })
+                    _ => Err(InsertErr::UnknownTransactionType)
                 }?;
             
                 // Get the TxEip1559 type for existing transaction
@@ -235,7 +285,6 @@ where
                 if Self::is_underpriced(existing_max_fee_per_gas, unsigned_tx.max_fee_per_gas)
                 {
                     return Err(InsertErr::Underpriced {
-                        transaction: Arc::clone(&pool_tx.transaction),
                         existing: *existing_transaction.tx_hash(),
                     })
                 }
@@ -386,14 +435,15 @@ where
         let user_tx_count = self.all_transactions.tx_counter.get(signer).copied().unwrap_or_default();
 
         if user_tx_count >= self.config.max_account_slots {
-            return Err(InsertErr::ExceededSenderTransactionsCapacity { transaction: transaction })
+            return Err(InsertErr::ExceededSenderTransactionsCapacity {
+                address: signer.clone(),
+            })
         }
 
         if tx_gas_limit > self.config.block_gas_limit {
             return Err(InsertErr::TxGasLimitMoreThanAvailableBlockGas {
                 block_gas_limit: self.config.block_gas_limit,
                 tx_gas_limit,
-                transaction: transaction,
             })
         }
 
@@ -401,7 +451,6 @@ where
             return Err(InsertErr::InvalidTxNonce {
                 on_chain_nonce,
                 tx_nonce,
-                transaction
             })
         }
 
@@ -580,57 +629,6 @@ pub struct AddedPendingTransaction {
     discarded: Vec<Arc<TxEnvelope>>,
 }
 
-pub(crate) type InsertResult = Result<InsertOk, InsertErr>;
-
-pub struct InsertOk {
-    /// Reference to the transaction
-    transaction: Arc<TxEnvelope>,
-    /// The pool to move the transaction to
-    move_to: SubPool,
-    /// State of the inserted transaction
-    state: TxState,
-    /// The transaction that was replaced
-    replaced_tx: Option<(Arc<TxEnvelope>, SubPool)>,
-    /// Additional updates to transactions affected by this change
-    updates: Vec<PoolUpdate>
-}
-
-pub(crate) enum InsertErr {
-    /// Unknown transaction error, currently only Eip1559 transactions are handled
-    UnknownTransactionType { transaction: Arc<TxEnvelope> },
-    /// On-chain nonce must be less than or equal to the transaction nonce
-    InvalidTxNonce {
-        on_chain_nonce: u64,
-        tx_nonce: u64,
-        transaction: Arc<TxEnvelope>
-    },
-    /// Error in the signature of the transaction
-    SignatureError {signature_error: SignatureError},
-    /// Attempted to replace existing transaction, but was underpriced
-    Underpriced {
-        transaction: Arc<TxEnvelope>,
-        #[allow(dead_code)]
-        existing: TxHash,
-    },
-    /// Attempted to insert a transaction that would overdraft the sender's balance at the time of
-    /// insertion.
-    Overdraft { transaction: Arc<TxEnvelope> },
-    /// The transactions feeCap is lower than the chain's minimum fee requirement.
-    ///
-    /// See also [`MIN_PROTOCOL_BASE_FEE`]
-    FeeCapBelowMinimumProtocolFeeCap { transaction: Arc<TxEnvelope>, fee_cap: u128 },
-    /// Sender currently exceeds the configured limit for max account slots.
-    ///
-    /// The sender can be considered a spammer at this point.
-    ExceededSenderTransactionsCapacity { transaction: Arc<TxEnvelope> },
-    /// Transaction gas limit exceeds block's gas limit
-    TxGasLimitMoreThanAvailableBlockGas {
-        transaction: Arc<TxEnvelope>,
-        block_gas_limit: u64,
-        tx_gas_limit: u64,
-    },
-}
-
 /// Tracks the result after updating the pool
 #[derive(Debug)]
 pub(crate) struct UpdateOutcome {
@@ -649,7 +647,7 @@ impl Default for UpdateOutcome {
 
 // -----all_transactions.rs----
 
-use alloy::primitives::SignatureError;
+// use alloy::primitives::SignatureError;
 
 pub struct AllTransactions
 where 
@@ -1312,12 +1310,55 @@ impl<T> Clone for CoinbaseTipOrdering<T> {
 //     }
 // }
 
-// error.rs
+// -----result.rs-----
 
 use thiserror;
 
+pub(crate) type InsertResult = Result<InsertOk, InsertErr>;
+
+pub struct InsertOk {
+    /// Reference to the transaction
+    transaction: Arc<TxEnvelope>,
+    /// The pool to move the transaction to
+    move_to: SubPool,
+    /// State of the inserted transaction
+    state: TxState,
+    /// The transaction that was replaced
+    replaced_tx: Option<(Arc<TxEnvelope>, SubPool)>,
+    /// Additional updates to transactions affected by this change
+    updates: Vec<PoolUpdate>
+}
+
+pub(crate) enum InsertErr {
+    /// Unknown transaction error, currently only Eip1559 transactions are handled
+    UnknownTransactionType,
+    /// On-chain nonce must be less than or equal to the transaction nonce
+    InvalidTxNonce {
+        on_chain_nonce: u64,
+        tx_nonce: u64,
+    },
+    /// Error in the signature of the transaction
+    SignatureError,
+    /// Attempted to replace existing transaction, but was underpriced
+    Underpriced {
+        #[allow(dead_code)]
+        existing: TxHash,
+    },
+    /// The transactions feeCap is lower than the chain's minimum fee requirement.
+    FeeCapBelowMinimumProtocolFeeCap { fee_cap: u128 },
+    /// Sender currently exceeds the configured limit for max account slots.
+    ///
+    /// The sender can be considered a spammer at this point.
+    ExceededSenderTransactionsCapacity { address: Address },
+    /// Transaction gas limit exceeds block's gas limit
+    TxGasLimitMoreThanAvailableBlockGas {
+        block_gas_limit: u64,
+        tx_gas_limit: u64,
+    },
+}
 /// Transaction pool result type.
 pub type PoolResult<T> = Result<T, PoolError>;
+
 
 /// Transaction pool error
 #[derive(Debug, thiserror::Error)]
@@ -1341,13 +1382,39 @@ impl PoolError {
 /// The kind of pool error 
 #[derive(Debug, thiserror::Error)]
 pub enum PoolErrorKind {
-    // Transaction already exists in the pool
+    /// Transaction already exists in the pool
     #[error("already imported")]
     AlreadyImported,
 
-    // Currently the implementation only handles Eip1559 txs
+    /// Currently the implementation only handles Eip1559 txs
     #[error("unknown transaction type")]
     UnknownTransactionType,
+
+    /// On-chain nonce must be less than or equal to the transaction nonce
+    #[error("invalid tx nonce: {0} > {1}")]
+    InvalidTxNonce(u64, u64),
+
+    /// Transaction signature error
+    #[error("signature error for transaction")]
+    SignatureError,
+
+    /// Attempted to replace existing transaction, but was underpriced
+    #[error("tried to replace existingtransaction with transaction but it was underpriced: {0}")]
+    ReplacementUnderpriced(TxHash),
+
+    /// The fee cap of the transaction is below the minimum fee cap determined by the protocol
+    #[error("transaction feeCap below chain minimum for transaction: {0}")]
+    FeeCapBelowMinimumProtocolFeeCap(u128),
+
+    /// Sender currently exceeds the configured limit for max account slots.
+    ///
+    /// The sender can be considered a spammer at this point.
+    #[error("sender {0} exceeds max account slots")]
+    SpammerExceededCapacity(Address),
+
+    /// Transaction gas limit exceeds block's gas limit
+    #[error("transaction gas limit {1} exceeds block gas limit {0}")]
+    TxGasLimitMoreThanAvailableBlockGas(u64, u64),
 }
 
 
