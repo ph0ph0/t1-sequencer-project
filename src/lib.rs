@@ -77,8 +77,15 @@ where
 
         // TODO: Update user info?
 
-        // TODO: Add match statement
-        self.insert_tx(tx, on_chain_balance, on_chain_nonce);
+
+        match self.insert_tx(tx, on_chain_balance, on_chain_nonce) {
+            Ok(InsertOk {transaction, move_to, replaced_tx, updates, ..}) => {
+
+            }
+            Err(err) => {
+
+            }
+        }
 
         // TODO: Return correct result
         Ok(AddedTransaction::Pending(tx))
@@ -378,13 +385,71 @@ where
                 transaction
             })
         }
-        
+
         Ok(transaction)
     }
 
 
     fn is_underpriced(existing_max_fee_per_gas: u128, possible_replacement_max_fee_per_gas: u128) -> bool {
         possible_replacement_max_fee_per_gas <  existing_max_fee_per_gas
+    }
+
+    /// Inserts the transaction into the given sub-pool.
+    /// Optionally, removes the replacement transaction.
+    fn add_new_transaction(
+        &mut self,
+        transaction: Arc<TxEnvelope>,
+        replaced: Option<(Arc<TxEnvelope>, SubPool)>,
+        pool: SubPool,
+    ) {
+        if let Some((replaced, replaced_pool)) = replaced {
+            // Remove the replaced transaction
+            self.remove_from_subpool(replaced_pool, replaced.id());
+        }
+
+        self.add_transaction_to_subpool(pool, transaction)
+    }
+
+    /// Removes the transaction from the given pool.
+    ///
+    /// Caution: this only removes the tx from the sub-pool and not from the pool itself
+    fn remove_from_subpool(
+        &mut self,
+        pool: SubPool,
+        tx: &TransactionId,
+    ) -> Option<Arc<TxEnvelope>> {
+        let tx = match pool {
+            SubPool::Queued => self.queued_pool.remove_transaction(tx),
+            SubPool::Pending => self.pending_pool.remove_transaction(tx),
+        };
+
+        if let Some(ref tx) = tx {
+            // We trace here instead of in subpool structs directly, because the `ParkedPool` type
+            // is generic and it would not be possible to distinguish whether a transaction is
+            // being removed from the `BaseFee` pool, or the `Queued` pool.
+            trace!(target: "txpool", hash=%tx.transaction.hash(), ?pool, "Removed transaction from a subpool");
+        }
+        tx
+    }
+
+    /// Inserts the transaction into the given sub-pool.
+    fn add_transaction_to_subpool(
+        &mut self,
+        pool: SubPool,
+        tx: Arc<ValidPoolTransaction<T::Transaction>>,
+    ) {
+        // We trace here instead of in structs directly, because the `ParkedPool` type is
+        // generic and it would not be possible to distinguish whether a transaction is being
+        // added to the `BaseFee` pool, or the `Queued` pool.
+        trace!(target: "txpool", hash=%tx.transaction.hash(), ?pool, "Adding transaction to a subpool");
+        match pool {
+            SubPool::Queued => self.queued_pool.add_transaction(tx),
+            SubPool::Pending => {
+                self.pending_pool.add_transaction(tx, self.all_transactions.pending_fees.base_fee);
+            }
+            SubPool::BaseFee => self.basefee_pool.add_transaction(tx),
+            SubPool::Blob => self.blob_pool.add_transaction(tx),
+        }
     }
 }
 
@@ -717,6 +782,15 @@ pub struct QueuedPool<T: QueuedOrd> {
     // TODO: Move up to Pool?
     // Keeps track of the number of transactions in the pool by the sender and the last submission id.
     sender_transaction_count: HashMap<Address, SenderTransactionCount>
+}
+
+impl<T: QueuedOrd> QueuedPool<T> {
+    fn remove_transaction(&mut self, id: &TransactionId) -> Option<Arc<TxEnvelope>> {
+        let tx = self.by_id.remove(id)?;
+        self.best.remove(&tx);
+        self.remove_sender_count(tx.transaction.recover_signer());
+        Some(tx.into())
+    }
 }
 
 
