@@ -137,69 +137,65 @@ impl From<TxState> for SubPool {
     }
 }
 
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-//     #[test]
-//     fn test_promoted() {
-//         assert!(SubPool::BaseFee.is_promoted(SubPool::Queued));
-//         assert!(SubPool::Pending.is_promoted(SubPool::BaseFee));
-//         assert!(SubPool::Pending.is_promoted(SubPool::Queued));
-//         assert!(SubPool::Pending.is_promoted(SubPool::Blob));
-//         assert!(!SubPool::BaseFee.is_promoted(SubPool::Pending));
-//         assert!(!SubPool::Queued.is_promoted(SubPool::BaseFee));
-//     }
+    #[test]
+    fn test_promoted() {
+        assert!(SubPool::Pending.is_promoted(SubPool::Queued));
+        assert!(!SubPool::Queued.is_promoted(SubPool::Pending));
+    }
 
-//     #[test]
-//     fn test_tx_state() {
-//         let mut state = TxState::default();
-//         state |= TxState::NO_NONCE_GAPS;
-//         assert!(state.intersects(TxState::NO_NONCE_GAPS))
-//     }
+    #[test]
+    fn test_tx_state() {
+        let mut state = TxState::default();
+        state |= TxState::NO_NONCE_GAPS;
+        assert!(state.intersects(TxState::NO_NONCE_GAPS))
+    }
 
-//     #[test]
-//     fn test_tx_queued() {
-//         let state = TxState::default();
-//         assert_eq!(SubPool::Queued, state.into());
+    #[test]
+    fn test_tx_queued() {
+        let state = TxState::default();
+        assert_eq!(SubPool::Queued, state.into());
 
-//         let state = TxState::NO_PARKED_ANCESTORS |
-//             TxState::NO_NONCE_GAPS |
-//             TxState::NOT_TOO_MUCH_GAS |
-//             TxState::ENOUGH_FEE_CAP_BLOCK;
-//         assert_eq!(SubPool::Queued, state.into());
-//     }
+        let state = TxState::NO_PARKED_ANCESTORS |
+            TxState::NO_NONCE_GAPS |
+            TxState::NOT_TOO_MUCH_GAS |
+            TxState::ENOUGH_FEE_CAP_BLOCK;
+        assert_eq!(SubPool::Queued, state.into());
+    }
 
-//     #[test]
-//     fn test_tx_pending() {
-//         let state = TxState::PENDING_POOL_BITS;
-//         assert_eq!(SubPool::Pending, state.into());
-//         assert!(state.is_pending());
+    #[test]
+    fn test_tx_pending() {
+        let state = TxState::PENDING_POOL_BITS;
+        assert_eq!(SubPool::Pending, state.into());
+        assert!(state.is_pending());
 
-//         let bits = 0b11111100;
-//         let state = TxState::from_bits(bits).unwrap();
-//         assert_eq!(SubPool::Pending, state.into());
-//         assert!(state.is_pending());
+        let bits = 0b11111100;
+        let state = TxState::from_bits(bits).unwrap();
+        assert_eq!(SubPool::Pending, state.into());
+        assert!(state.is_pending());
 
-//         let bits = 0b11111110;
-//         let state = TxState::from_bits(bits).unwrap();
-//         assert_eq!(SubPool::Pending, state.into());
-//         assert!(state.is_pending());
-//     }
+        let bits = 0b11111110;
+        let state = TxState::from_bits(bits).unwrap();
+        assert_eq!(SubPool::Pending, state.into());
+        assert!(state.is_pending());
+    }
 
-//     #[test]
-//     fn test_blob() {
-//         let mut state = TxState::PENDING_POOL_BITS;
-//         state.insert(TxState::BLOB_TRANSACTION);
-//         assert!(state.is_pending());
+    #[test]
+    fn test_blob() {
+        let mut state = TxState::PENDING_POOL_BITS;
+        state.insert(TxState::BLOB_TRANSACTION);
+        assert!(state.is_pending());
 
-//         state.remove(TxState::ENOUGH_BLOB_FEE_CAP_BLOCK);
-//         assert!(state.is_blob());
-//         assert!(!state.is_pending());
+        state.remove(TxState::ENOUGH_BLOB_FEE_CAP_BLOCK);
+        assert!(state.is_blob());
+        assert!(!state.is_pending());
 
-//         state.insert(TxState::ENOUGH_BLOB_FEE_CAP_BLOCK);
-//         state.remove(TxState::ENOUGH_FEE_CAP_BLOCK);
-//         assert!(state.is_blob());
-//         assert!(!state.is_pending());
-//     }
-// }
+        state.insert(TxState::ENOUGH_BLOB_FEE_CAP_BLOCK);
+        state.remove(TxState::ENOUGH_FEE_CAP_BLOCK);
+        assert!(state.is_blob());
+        assert!(!state.is_pending());
+    }
+}
