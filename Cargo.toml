@@ -7,6 +7,13 @@ edition = "2021"
 # ethereum
 alloy = { version = "0.4", features = ["full", "getrandom"] }
 
+# cryptography
+ecdsa = "0.16"
+
+# async
+tokio = "1.39"
+
 #misc
 bitflags = "2.4"
 thiserror = "1.0"
+rand_core = "0.6"

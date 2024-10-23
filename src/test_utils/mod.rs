@@ -1,3 +1,4 @@
+pub mod helpers;
 
 // // -----test_utils/mock.rs-----
 

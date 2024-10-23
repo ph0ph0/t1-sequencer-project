@@ -2696,7 +2696,10 @@ version = "0.1.0"
 dependencies = [
  "alloy",
  "bitflags",
+ "ecdsa",
+ "rand_core",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]
