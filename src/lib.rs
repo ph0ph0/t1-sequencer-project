@@ -403,8 +403,10 @@ where
         pool: SubPool,
     ) {
         if let Some((replaced, replaced_pool)) = replaced {
+
+            let replaced_transaction_id = TransactionId::new(replaced.recover_signer().unwrap(), replaced.nonce());
             // Remove the replaced transaction
-            self.remove_from_subpool(replaced_pool, replaced.id());
+            self.remove_from_subpool(replaced_pool, &replaced_transaction_id);
         }
 
         self.add_transaction_to_subpool(pool, transaction)
@@ -435,7 +437,7 @@ where
         match pool {
             SubPool::Queued => self.queued_transactions.add_transaction(tx),
             SubPool::Pending => {
-                self.pending_transactions.add_transaction(tx, self.all_transactions.pending_fees.base_fee);
+                self.pending_transactions.add_transaction(tx, self.config.pending_base_fee);
             }
         }
     }
@@ -778,7 +780,7 @@ where
     /// is being _added_ to the pool.
     fn update_independents_and_highest_nonces(
         &mut self,
-        tx: &PendingTransaction<T>,
+        tx: &PendingTransaction<O>,
         tx_id: &TransactionId,
     ) {
         let ancestor_id = tx_id.unchecked_ancestor();
@@ -823,8 +825,9 @@ where
 // -----queued.rs-----
 
 use std::collections::hash_map::Entry as HashMapEntry;
+use std::fmt::Debug;
 
-#[derive(PartialOrd, Eq, PartialEq)]
+#[derive(PartialOrd, Eq, PartialEq, Debug)]
 pub struct QueuedPoolTransaction {
 
     /// Id to indicate when transaction was added to pool
@@ -843,8 +846,23 @@ impl Ord for QueuedPoolTransaction {
     }
 }
 
+impl Clone for QueuedPoolTransaction {
+    fn clone(&self) -> Self {
+        Self {
+            submission_id: self.submission_id,
+            transaction: self.transaction.clone()
+        }
+    }
+}
+
+impl From<Arc<TxEnvelope>> for QueuedOrderedTransaction {
+    fn from(tx: Arc<TxEnvelope>) -> Self {
+        Self(tx)
+    }
+}
+
 /// Type wrapper for an alloy TxEnvelope in the queue, allowing them to be ordered by max_fee_per_gas then submission_id (see Ord implemntation below)
-pub struct QueuedOrderedTransaction(TxEnvelope);
+pub struct QueuedOrderedTransaction(Arc<TxEnvelope>);
 
 impl QueuedOrderedTransaction {
     pub fn max_fee_per_gas(&self) -> u128 {
@@ -874,6 +892,18 @@ impl PartialEq for QueuedOrderedTransaction {
 
 impl Eq for QueuedOrderedTransaction {}
 
+impl Clone for QueuedOrderedTransaction {
+    fn clone(&self) -> Self {
+        Self(Arc::clone(&self.0))
+    }
+}
+
+impl Debug for QueuedOrderedTransaction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "QueuedOrderedTransaction({:?})", self.0)
+    }
+}
+
 
 // TODO: Derive
 pub struct QueuedPool {
@@ -893,6 +923,63 @@ pub struct QueuedPool {
 }
 
 impl QueuedPool {
+
+    /// Returns `true` if the transaction with the given id is already included in this pool.
+    pub(crate) fn contains(&self, id: &TransactionId) -> bool {
+        self.by_id.contains_key(id)
+    }
+
+    /// Retrieves a transaction with the given ID from the pool, if it exists.
+    fn get(&self, id: &TransactionId) -> Option<&QueuedPoolTransaction> {
+        self.by_id.get(id)
+    }
+
+     fn next_id(&mut self) -> u64 {
+        let id = self.current_submission_id;
+        self.current_submission_id = self.current_submission_id.wrapping_add(1);
+        id
+    }
+
+    /// Adds a new transactions to the pending queue.
+    ///
+    /// # Panics
+    ///
+    /// If the transaction is already included.
+    pub fn add_transaction(&mut self, tx: Arc<TxEnvelope>) {
+        let sender = tx.recover_signer().unwrap();
+        let id = TransactionId::new(sender, tx.nonce());    
+        assert!(
+            !self.contains(&id),
+            "transaction already included {:?}",
+            self.get(&id).unwrap().transaction
+        );
+        let submission_id = self.next_id();
+
+        // update or create sender entry
+        self.add_sender_count(sender, submission_id);
+        let transaction = QueuedPoolTransaction { submission_id, transaction: tx.into() };
+
+        self.by_id.insert(id, transaction.clone());
+        self.best.insert(transaction);
+    }
+
+    /// Increments the count of transactions for the given sender and updates the tracked submission
+    /// id.
+    fn add_sender_count(&mut self, sender: Address, submission_id: u64) {
+        match self.sender_transaction_count.entry(sender) {
+            HashMapEntry::Occupied(mut entry) => {
+                let value = entry.get_mut();
+
+                value.count += 1;
+                value.last_submission_id = submission_id;
+            }
+            HashMapEntry::Vacant(entry) => {
+                entry
+                    .insert(SenderTransactionCount { count: 1, last_submission_id: submission_id });
+            }
+        }
+    }
+
     fn remove_transaction(&mut self, id: &TransactionId) -> Option<Arc<TxEnvelope>> {
         let tx = self.by_id.remove(id)?;
         self.best.remove(&tx);
@@ -966,7 +1053,7 @@ impl TransactionId {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SenderTransactionCount {
     count: u64,
-    last_submission: u64
+    last_submission_id: u64
 }
 
 // -----ordering.rs-----
