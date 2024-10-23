@@ -238,7 +238,6 @@ mod tests {
     use crate::test_utils::helpers::{create_default_tx_and_sender, create_tx, create_tx_and_sender};
     use alloy::primitives::U256;
     use crate::ordering::CoinbaseTipOrdering;
-    use std::marker::PhantomData;
 
     #[tokio::test]
     async fn test_add_and_remove_transaction() {
@@ -345,6 +344,28 @@ mod tests {
         assert_eq!(ordered_txs[1].sender, sender1);
         assert_eq!(ordered_txs[1].transaction.max_fee_per_gas(), 10);
         assert_eq!(ordered_txs[1].priority, Priority::Value(U256::from(9)));
+
+        // Add some more transactions
+        let (tx3, sender3, _) = create_tx_and_sender(30, 40, 100000, U256::ZERO, 0).await; // max_fee_per_gas = 30
+        let (tx4, sender4, _) = create_tx_and_sender(40, 50, 100000, U256::ZERO, 0).await; // max_fee_per_gas = 40
+
+        pool.add_transaction(Arc::clone(&tx3), 1);
+        pool.add_transaction(Arc::clone(&tx4), 1);
+
+        // Check ordering with new transactions present
+        let ordered_txs: Vec<_> = pool.independent_transactions.iter().collect();
+        assert_eq!(ordered_txs[0].sender, sender4);
+        assert_eq!(ordered_txs[0].transaction.max_fee_per_gas(), 40);
+        assert_eq!(ordered_txs[0].priority, Priority::Value(U256::from(39)));   
+        assert_eq!(ordered_txs[1].sender, sender3);
+        assert_eq!(ordered_txs[1].transaction.max_fee_per_gas(), 30);
+        assert_eq!(ordered_txs[1].priority, Priority::Value(U256::from(29)));
+        assert_eq!(ordered_txs[2].sender, sender2);
+        assert_eq!(ordered_txs[2].transaction.max_fee_per_gas(), 20);
+        assert_eq!(ordered_txs[2].priority, Priority::Value(U256::from(19)));
+        assert_eq!(ordered_txs[3].sender, sender1);
+        assert_eq!(ordered_txs[3].transaction.max_fee_per_gas(), 10);
+        assert_eq!(ordered_txs[3].priority, Priority::Value(U256::from(9)));
     }
 }
 
