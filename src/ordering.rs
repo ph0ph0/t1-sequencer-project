@@ -31,6 +31,8 @@ impl<T: Ord + Clone> From<Option<T>> for Priority<T> {
     }
 }
 
+#[derive(Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[non_exhaustive]
 pub struct CoinbaseTipOrdering<T>(PhantomData<T>);
 
 impl<T> TransactionOrdering for CoinbaseTipOrdering<T> 

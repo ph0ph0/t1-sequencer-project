@@ -17,10 +17,9 @@ use crate::{
     ordering::{Priority, TransactionOrdering},
 };
 
-#[derive(Eq, PartialEq)]
 pub struct PendingTransaction<O>
 where
-    O: TransactionOrdering + PartialEq + Eq + PartialOrd + Ord,
+    O: TransactionOrdering,
 {
     submission_id: u64,
     transaction: Arc<TxEnvelope>,
@@ -31,7 +30,7 @@ where
 
 impl<O> Ord for PendingTransaction<O> 
 where
-    O: TransactionOrdering + PartialEq + Eq + PartialOrd + Ord,
+    O: TransactionOrdering,
 {
     // TODO: Probs need to remove the nonce sort as it is not needed
     fn cmp(&self, other: &Self) -> Ordering {
@@ -44,16 +43,30 @@ where
 
 impl<O> PartialOrd for PendingTransaction<O> 
 where
-    O: TransactionOrdering + PartialEq + Eq + PartialOrd + Ord,
+    O: TransactionOrdering,
 {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
+impl<O> Eq for PendingTransaction<O> 
+where
+    O: TransactionOrdering,
+{}
+
+impl<O> PartialEq<Self> for PendingTransaction<O> 
+where
+    O: TransactionOrdering,
+{
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
 impl<O: TransactionOrdering> Clone for PendingTransaction<O> 
 where
-    O: TransactionOrdering + PartialEq + Eq + PartialOrd + Ord,
+    O: TransactionOrdering,
 {
     fn clone(&self) -> Self {
         Self {
@@ -65,11 +78,24 @@ where
     }
 }
 
+impl<O> std::fmt::Debug for PendingTransaction<O>
+where
+    O: TransactionOrdering,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PendingTransaction")
+            .field("submission_id", &self.submission_id)
+            .field("transaction", &self.transaction)
+            .field("priority", &self.priority)
+            .field("sender", &self.sender)
+            .finish()
+    }
+}
 
-// TODO: Add derive
+
 pub struct PendingPool<O> 
 where
-    O: TransactionOrdering + PartialEq + Eq + PartialOrd + Ord,
+    O: TransactionOrdering,
 {
     /// Determines how the transactions will be ordered
     ordering: O,
@@ -93,8 +119,18 @@ where
 
 impl<O> PendingPool<O> 
 where
-    O: TransactionOrdering + PartialEq + Eq + PartialOrd + Ord,
+    O: TransactionOrdering,
 {
+    pub fn new(ordering: O) -> Self {
+        Self {
+            ordering,
+            submission_id: 0,
+            by_id: BTreeMap::default(),
+            all: BTreeSet::default(),
+            independent_transactions: BTreeSet::default(),
+            highest_nonces: BTreeSet::default(),
+        }
+    }
     /// Retrieves a transaction with the given ID from the pool, if it exists.
     fn get(&self, id: &TransactionId) -> Option<&PendingTransaction<O>> {
         self.by_id.get(id)
@@ -194,3 +230,121 @@ where
         Some(tx.transaction)
     }
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::helpers::{create_default_tx_and_sender, create_tx, create_tx_and_sender};
+    use alloy::primitives::U256;
+    use crate::ordering::CoinbaseTipOrdering;
+    use std::marker::PhantomData;
+
+    #[tokio::test]
+    async fn test_add_and_remove_transaction() {
+        let mut pool = PendingPool::<CoinbaseTipOrdering<TxEnvelope>>::new(CoinbaseTipOrdering::default());
+        let (tx, sender, _) = create_default_tx_and_sender().await;
+        let tx_id = TransactionId::from(Arc::clone(&tx));
+
+        // Insert transaction
+        pool.add_transaction(Arc::clone(&tx), 10);
+
+        // Check if transaction is in the pool
+        assert!(pool.contains(&tx_id));
+        assert_eq!(pool.by_id.len(), 1);
+        assert_eq!(pool.all.len(), 1);
+        assert_eq!(pool.independent_transactions.len(), 1);
+        assert_eq!(pool.highest_nonces.len(), 1);
+
+        // Remove transaction
+        let removed_tx = pool.remove_transaction(&tx_id);
+        assert_eq!(removed_tx, Some(tx));
+        assert_eq!(pool.by_id.len(), 0);
+        assert_eq!(pool.all.len(), 0);
+        assert_eq!(pool.independent_transactions.len(), 0);
+        assert_eq!(pool.highest_nonces.len(), 0);
+        assert!(!pool.contains(&tx_id));
+    }
+
+    #[tokio::test]
+    async fn test_remove_transaction_with_descendant() {
+        let mut pool = PendingPool::<CoinbaseTipOrdering<TxEnvelope>>::new(CoinbaseTipOrdering::default());
+        let (tx1, sender, private_key) = create_default_tx_and_sender().await;
+        let tx2 = create_tx(private_key, sender, 15, 25, 100000, U256::ZERO, 1).await;
+
+        pool.add_transaction(Arc::clone(&tx1), 10);
+        pool.add_transaction(Arc::clone(&tx2), 10);
+
+        let tx1_id = TransactionId::from(Arc::clone(&tx1));
+        pool.remove_transaction(&tx1_id);
+
+        assert_eq!(pool.independent_transactions.len(), 1);
+        let independent_tx = pool.independent_transactions.iter().next().unwrap();
+        assert_eq!(independent_tx.transaction.nonce(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_ancestor() {
+        // Create a pool    
+        let mut pool = PendingPool::<CoinbaseTipOrdering<TxEnvelope>>::new(CoinbaseTipOrdering::default());
+        // Create transactions
+        let (tx1, sender, private_key) = create_default_tx_and_sender().await;
+        let tx2 = create_tx(private_key.clone(), sender, 15, 25, 100000, U256::ZERO, 1).await;
+        let tx3 = create_tx(private_key.clone(), sender, 20, 30, 100000, U256::ZERO, 2).await;
+
+        // Create PendingTransactions
+        let tx1_pending = PendingTransaction {
+            submission_id: pool.next_id(),
+            transaction: Arc::clone(&tx1),
+            priority: pool.ordering.priority(&tx1, 10),
+            sender,
+        };
+
+        let tx2_pending: PendingTransaction<CoinbaseTipOrdering<TxEnvelope>> = PendingTransaction {
+            submission_id: pool.next_id(),
+            transaction: Arc::clone(&tx2),
+            priority: pool.ordering.priority(&tx2, 10),
+            sender,
+        };
+
+        // Add transactions to the pool
+        pool.add_transaction(Arc::clone(&tx1), 10); // nonce 0
+        pool.add_transaction(Arc::clone(&tx2), 10); // nonce 1
+        pool.add_transaction(Arc::clone(&tx3), 10); // nonce 2
+
+        let tx1_id = TransactionId::from(Arc::clone(&tx1));
+        let tx2_id = TransactionId::from(Arc::clone(&tx2));
+        let tx3_id = TransactionId::from(Arc::clone(&tx3));
+
+        // Test ancestor of tx2
+        assert_eq!(pool.ancestor(&tx2_id), Some(&tx1_pending));
+
+        // Test ancestor of tx3
+        assert_eq!(pool.ancestor(&tx3_id), Some(&tx2_pending));
+
+        // Test ancestor of tx1 (should be None)
+        assert_eq!(pool.ancestor(&tx1_id), None);
+    }
+
+    #[tokio::test]
+    async fn test_ordering() {
+        let mut pool = PendingPool::<CoinbaseTipOrdering<TxEnvelope>>::new(CoinbaseTipOrdering::default());
+        let (tx1, sender1, _) = create_default_tx_and_sender().await; 
+        let (tx2, sender2, _) = create_tx_and_sender(20, 30, 100000, U256::ZERO, 0).await;
+
+        pool.add_transaction(Arc::clone(&tx1), 1);
+        pool.add_transaction(Arc::clone(&tx2), 1);
+
+        // effective tip = min(max_fee_per_gas - base_fee, max_priority_fee_per_gas)
+        // effective tx1_tip = min(10 - 1, 20) = 9
+        // effective tx2_tip2 = min(20 - 1, 30) = 19
+        let ordered_txs: Vec<_> = pool.independent_transactions.iter().collect();
+        assert_eq!(ordered_txs[0].sender, sender2);
+        assert_eq!(ordered_txs[0].transaction.max_fee_per_gas(), 20);
+        assert_eq!(ordered_txs[0].priority, Priority::Value(U256::from(19)));   
+        assert_eq!(ordered_txs[1].sender, sender1);
+        assert_eq!(ordered_txs[1].transaction.max_fee_per_gas(), 10);
+        assert_eq!(ordered_txs[1].priority, Priority::Value(U256::from(9)));
+    }
+}
+
