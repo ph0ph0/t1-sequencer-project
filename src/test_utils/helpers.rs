@@ -106,6 +106,29 @@ pub async fn create_default_tx_envelope_and_sender() -> (TxEnvelope, Address, Si
     (tx_envelope, sender, private_key)
 }
 
+pub async fn create_tx_envelope_with_sender(
+    private_key: SigningKey<Secp256k1>,
+    sender: Address,
+    max_fee_per_gas: u128, 
+    max_priority_fee_per_gas: u128, 
+    gas_limit: u64, 
+    value: U256, 
+    nonce: u64
+) -> TxEnvelope {
+    let tx = create_tx(
+        private_key, 
+        sender, 
+        max_fee_per_gas, 
+        max_priority_fee_per_gas, 
+        gas_limit, 
+        value, 
+        nonce
+    ).await;
+    
+    Arc::try_unwrap(tx).expect("Failed to unwrap Arc<TxEnvelope>")
+}
+
+
 
 // === Pool Internal Transaction ===
 
