@@ -41,6 +41,11 @@ where
     pub fn sender(&self) -> Address {
         self.sender
     }
+
+    /// The next transaction of the sender: `nonce + 1`
+    pub(crate) fn unlocks(&self) -> TransactionId {
+        TransactionId::new(self.sender, self.transaction.nonce() + 1)
+    }
 }
 
 
