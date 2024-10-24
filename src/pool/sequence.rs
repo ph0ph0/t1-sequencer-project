@@ -1,9 +1,11 @@
 // -----sequence.rs-----
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::sync::Arc;
 
-use tokio::sync::mpsc::Receiver;
+use tokio::sync::broadcast::{error::TryRecvError, Receiver};
 use alloy::primitives::TxHash;
+use alloy::consensus::{Transaction, TxEnvelope};
 
 use crate::{
     ordering::TransactionOrdering,
@@ -31,4 +33,56 @@ where
     /// These new pending transactions are inserted into this iterator's pool before yielding the
     /// next value
     pub(crate) new_transaction_receiver: Option<Receiver<PendingTransaction<O>>>,
+}
+
+impl<T: TransactionOrdering> TransactionSequence<T> {
+    /// Mark the transaction and it's descendants as invalid.
+    pub(crate) fn mark_invalid(&mut self, tx: &Arc<TxEnvelope>) {
+        self.invalid.insert(*tx.tx_hash());
+    }
+
+    /// Returns the ancestor the given transaction, the transaction with `nonce - 1`.
+    ///
+    /// Note: for a transaction with nonce higher than the current on chain nonce this will always
+    /// return an ancestor since all transaction in this pool are gapless.
+    pub(crate) fn ancestor(&self, id: &TransactionId) -> Option<&PendingTransaction<T>> {
+        self.all.get(&id.unchecked_ancestor()?)
+    }
+
+    /// Non-blocking read on the new pending transactions subscription channel
+    fn try_recv(&mut self) -> Option<PendingTransaction<T>> {
+        loop {
+            match self.new_transaction_receiver.as_mut()?.try_recv() {
+                Ok(tx) => return Some(tx),
+                // note TryRecvError::Lagged can be returned here, which is an error that attempts
+                // to correct itself on consecutive try_recv() attempts
+
+                // the cost of ignoring this error is allowing old transactions to get
+                // overwritten after the chan buffer size is met
+                Err(TryRecvError::Lagged(_)) => {
+                    // Handle the case where the receiver lagged too far behind.
+                    // `num_skipped` indicates the number of messages that were skipped.
+                    continue
+                }
+
+                // this case is still better than the existing iterator behavior where no new
+                // pending txs are surfaced to consumers
+                Err(_) => return None,
+            }
+        }
+    }
+
+    /// Checks for new transactions that have come into the `PendingPool` after this iterator was
+    /// created and inserts them
+    fn add_new_transactions(&mut self) {
+        while let Some(pending_tx) = self.try_recv() {
+            let sender = pending_tx.sender();
+            let nonce = pending_tx.transaction().nonce();
+            let tx_id = TransactionId::new(sender, nonce);
+            if self.ancestor(&tx_id).is_none() {
+                self.independent.insert(pending_tx.clone());
+            }
+            self.all.insert(tx_id, pending_tx);
+        }
+    }
 }
