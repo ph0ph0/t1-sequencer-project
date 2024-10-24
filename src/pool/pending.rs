@@ -32,6 +32,22 @@ impl<O> PendingTransaction<O>
 where
     O: TransactionOrdering,
 {
+
+    /// Creates a new `PendingTransaction`.
+    pub fn new(
+        submission_id: u64,
+        transaction: Arc<TxEnvelope>,
+        priority: Priority<O::PriorityValue>,
+        sender: Address,
+    ) -> Self {
+        Self {
+            submission_id,
+            transaction,
+            priority,
+            sender,
+        }
+    }
+
     /// Returns a reference to the transaction.
     pub fn transaction(&self) -> &Arc<TxEnvelope> {
         &self.transaction
@@ -53,7 +69,6 @@ impl<O> Ord for PendingTransaction<O>
 where
     O: TransactionOrdering,
 {
-    // TODO: Probs need to remove the nonce sort as it is not needed
     fn cmp(&self, other: &Self) -> Ordering {
         // Primary sort by priority fee (descending)
         other.priority.cmp(&self.priority)
