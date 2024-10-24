@@ -388,7 +388,6 @@ mod tests {
 
         // First transaction should be returned (nonce 0)
         let next_tx = filter.next().unwrap();
-        println!("next_tx nonce: {:?}", next_tx.transaction().nonce());
         assert_eq!(next_tx.transaction().nonce(), 0);
 
         // Third transaction should be returned (nonce 2)

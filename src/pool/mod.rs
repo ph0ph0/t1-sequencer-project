@@ -704,8 +704,6 @@ mod tests {
 
         let tx_arc = Arc::new(tx.clone());
 
-        println!("result: {:?}", result);
-
         assert!(result.is_ok());
         if let Ok(AddedTransaction::Pending(added_tx)) = result {
             assert_eq!(added_tx.transaction.clone(), tx_arc.clone());
