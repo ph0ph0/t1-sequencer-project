@@ -13,7 +13,7 @@ use crate::{
     pool::state::{SubPool, TxState},
 };
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq, Clone)]
 pub enum AddedTransaction
 {
     Pending(AddedPendingTransaction),
@@ -25,7 +25,7 @@ pub enum AddedTransaction
     }
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq, Clone)]
 pub struct AddedPendingTransaction {
     /// Inserted transaction.
     pub transaction: Arc<TxEnvelope>,
@@ -38,7 +38,7 @@ pub struct AddedPendingTransaction {
 }
 
 /// Tracks the result after updating the pool
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq, Clone)]
 pub(crate) struct UpdateOutcome {
     /// transactions promoted to the pending pool
     pub(crate) promoted: Vec<Arc<TxEnvelope>>,
@@ -55,7 +55,7 @@ impl Default for UpdateOutcome {
 // A change of the transaction's location
 ///
 /// NOTE: this guarantees that `current` and `destination` differ.
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq, Clone)]
 pub(crate) struct PoolUpdate {
     /// Internal tx id.
     pub(crate) id: TransactionId,
@@ -68,7 +68,7 @@ pub(crate) struct PoolUpdate {
 }
 
 /// Where to move an existing transaction.
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq, Clone)]
 pub(crate) enum Destination {
     /// Discard the transaction.
     Discard,
@@ -78,7 +78,7 @@ pub(crate) enum Destination {
 
 pub(crate) type InsertResult = Result<InsertOk, InsertErr>;
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq, Clone)]
 pub struct InsertOk {
     /// Reference to the transaction
     pub transaction: Arc<TxEnvelope>,
@@ -92,7 +92,7 @@ pub struct InsertOk {
     pub updates: Vec<PoolUpdate>
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq, Clone)]
 pub(crate) enum InsertErr {
     /// Unknown transaction error, currently only Eip1559 transactions are handled
     UnknownTransactionType,
@@ -108,7 +108,9 @@ pub(crate) enum InsertErr {
         #[allow(dead_code)]
         existing: TxHash,
     },
-    /// The transactions feeCap is lower than the chain's minimum fee requirement.
+    /// The transactions fee_cap is lower than the chain's minimum fee requirement.
+    /// 
+    /// fee_cap is the transaction's max_fee_per_gas
     FeeCapBelowMinimumProtocolFeeCap { fee_cap: u128 },
     /// Sender currently exceeds the configured limit for max account slots.
     ///
@@ -125,7 +127,7 @@ pub type PoolResult<T> = Result<T, PoolError>;
 
 
 /// Transaction pool error
-#[derive(Debug, thiserror::Error, Eq, PartialEq)]
+#[derive(Debug, thiserror::Error, Eq, PartialEq, Clone)]
 #[error("[{hash}]: {kind}")]
 pub struct PoolError {
     /// Hash of the transaction that caused the error
@@ -144,7 +146,7 @@ impl PoolError {
 }
 
 /// The kind of pool error 
-#[derive(Debug, thiserror::Error, Eq, PartialEq)]
+#[derive(Debug, thiserror::Error, Eq, PartialEq, Clone)]
 pub enum PoolErrorKind {
     /// Transaction already exists in the pool
     #[error("already imported")]
