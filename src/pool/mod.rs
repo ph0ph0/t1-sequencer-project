@@ -57,13 +57,8 @@ where
     all_transactions: AllTransactions,
     ///All transactions that can be executed on the current chain state
     pending_transactions: PendingPool<O>,
-    /// Struct that holds transactions ordered by priority fee and respects nonce ordering
-    /// Represents the best subset of transaction from pending_transactions
-    transaction_sequence: TransactionSequence<O>, // TODO: Do we need this?
     /// All transactions that cannot be executed on current state but might be able to in the future
     queued_transactions: QueuedPool,
-    // Metrics for the pool and subpool
-    // metrics: PoolMetrics TODO: Needed?
 }
 
 impl<O> Pool<O> 
@@ -626,7 +621,6 @@ mod tests {
         AllTransactions,
         PendingPool,
         QueuedPool,
-        TransactionSequence,
     };
     use crate::ordering::CoinbaseTipOrdering;
     use crate::result::{AddedTransaction, PoolResult, PoolError, PoolErrorKind}; 
@@ -645,7 +639,6 @@ mod tests {
             config,
             all_transactions: AllTransactions::default(),
             pending_transactions: PendingPool::new(CoinbaseTipOrdering::default()),
-            transaction_sequence: TransactionSequence::new(CoinbaseTipOrdering::default()),
             queued_transactions: QueuedPool::default(),
         }
     }
