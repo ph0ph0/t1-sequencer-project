@@ -97,9 +97,6 @@ impl Debug for QueuedOrderedTransaction {
         write!(f, "QueuedOrderedTransaction({:?})", self.0)
     }
 }
-
-
-// TODO: Derive
 pub struct QueuedPool {
     /// Keeps track of the last transaction submitted to the pool
     current_submission_id: u64,
@@ -110,10 +107,6 @@ pub struct QueuedPool {
     /// These are the transactions that could be promoted to pending
     best: BTreeSet<QueuedPoolTransaction>,
 
-    /// Last submission_id for each sender, TODO: Do we need this?
-    // last_sender_submission: BTreeSet<SubmissionSenderId>>,
-
-    // TODO: Move up to Pool?
     /// Keeps track of the number of transactions in the pool by the sender and the last submission id.
     sender_transaction_count: HashMap<Address, SenderTransactionCount>
 }

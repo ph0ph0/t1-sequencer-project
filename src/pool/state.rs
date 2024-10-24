@@ -4,8 +4,6 @@
 bitflags::bitflags! {
     /// Marker to represents the current state of a transaction in the pool and from which the corresponding sub-pool is derived, depending on what bits are set.
     ///
-    /// This mirrors [erigon's ephemeral state field](https://github.com/ledgerwatch/erigon/wiki/Transaction-Pool-Design#ordering-function).
-    ///
     /// The [SubPool] the transaction belongs to is derived from its state and determined by the following sequential checks:
     ///
     /// - If it satisfies the [TxState::PENDING_POOL_BITS] it belongs in the pending sub-pool: [SubPool::Pending].
@@ -100,18 +98,6 @@ impl SubPool {
         matches!(self, Self::Queued)
     }
 
-    // /// Whether this transaction is in the base fee pool.
-    // #[inline]
-    // pub const fn is_base_fee(&self) -> bool {
-    //     matches!(self, Self::BaseFee)
-    // }
-
-    // /// Whether this transaction is in the blob pool.
-    // #[inline]
-    // pub const fn is_blob(&self) -> bool {
-    //     matches!(self, Self::Blob)
-    // }
-
     /// Returns whether this is a promotion depending on the current sub-pool location.
     #[inline]
     pub fn is_promoted(&self, other: Self) -> bool {
@@ -124,16 +110,10 @@ impl From<TxState> for SubPool {
         if value.is_pending() {
             return Self::Pending
         }
-        // if value.is_blob() {
-        //     // all _non-pending_ blob transactions are in the blob sub-pool
-        //     return Self::Blob
-        // }
         if value.bits() < TxState::BASE_FEE_POOL_BITS.bits() {
             return Self::Queued
         }
-        // TODO: Double check this
         Self::Queued
-        // Self::BaseFee
     }
 }
 

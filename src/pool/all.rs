@@ -80,14 +80,6 @@ impl AllTransactions
     ) -> impl Iterator<Item = (&'a TransactionId, &'a mut PoolInternalTransaction)> + 'a {
         self.txs.range_mut(id..).take_while(|(other, _)| id.sender == other.sender)
     }
-
-    // TODO:
-    // pub(crate) update(
-    //     &mut self,
-    //     changed_accounts: HashMap<Address, SenderInfo>
-    // ) -> Vec<PoolUpdate> {
-
-    // }
 }
 
 

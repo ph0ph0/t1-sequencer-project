@@ -29,7 +29,7 @@ use crate::{
     },
 };
 
-// TODO: Add derive and impls
+
 pub struct PoolConfig {
     /// Max number of transactions a user can have in the pool
     pub max_account_slots: usize,
@@ -42,10 +42,6 @@ pub struct PoolConfig {
     /// Expected base fee for the pending block
     pub pending_base_fee: u64
 }
-
-// pub struct PoolMetrics { TODO: Needed?
-
-// }
 
 
 pub struct Pool<O>
@@ -79,8 +75,6 @@ where
                 tx_hash.clone(), 
                 PoolErrorKind::AlreadyImported))
         }
-
-        // TODO: Update user info?
 
         match self.insert_tx(tx, on_chain_balance, on_chain_nonce) {
             Ok(InsertOk {transaction, move_to, replaced_tx, updates, ..}) => {
@@ -210,7 +204,7 @@ where
         };
 
         let mut state = TxState::default();
-        // TODO: Check this
+
         let mut cumulative_cost = U256::ZERO;
         let mut updates = Vec::new();
 
@@ -239,7 +233,6 @@ where
             state.insert(TxState::NO_PARKED_ANCESTORS);
         }
 
-        // TODO: Check this
         // Check dynamic fee
         let fee_cap = transaction.max_fee_per_gas();
 
@@ -309,27 +302,10 @@ where
             // Tracks the next nonce we expect if the transactions are gapless
             let mut next_nonce = on_chain_id.nonce;
 
-            // TODO: Double check this bug
-            // We need to find out if the next transaction of the sender is considered pending
-            // NOTE: Phill: This is a bug. We cannot find ancestors using descendants! (L1658)
-            // All comments below are mine
-            // Result: If the current tx's nonce matched the on-chain nonce, will be false (L1642)
-            // If the current tx had ancestors, will always be true (see bug on L1658)
             let mut has_parked_ancestor = if ancestor.is_none() {
-                // If it doesn't have any ancestors (tx that need to execute before)
-                // the new transaction is the next one
                 false
             } else {
-                // Otherwise, it has ancestors (ie txs that need to execute).
-                // The transaction was added above so the _inclusive_ descendants iterator
-                // returns at least 1 tx (as it includes the tx that was just added! (ie this current one))
-                // descendants.peek() allows us to look at the tx with the next highest nonce after this current one
                 let (id, tx) = descendants.peek().expect("includes >= 1");
-                // If the id of the next descendant
-                // is less than the current tx (inserted_tx)
-                // then we flip (but don't set) and return the is_pending flag of the descendant tx.
-                // This makes no sense as descendants have a larger nonce and 
-                // for the current tx to have a smaller nonce it would be an ancestor.
                 if id.nonce < tx_nonce {
                     // tx here is the next descendant of the current tx.
                     !tx.state.is_pending()
@@ -338,23 +314,11 @@ where
                 }
             };
 
-
-
-        // Traverse all transactions of the sender and update existing transactions
-            // NOTE: Phill: This is where we ensure that txs are added without gaps
-            // We are iterating through the descendants. When we go through the loop,
-            // we first check if the current nonce is equal to the expected nonce.
-            // If it is, we continue, otherwise break.
-            // At the end of the loop, we update to the next expected nonce,
-            // therefore ensuring that there are no nonce gaps.
+            // Traverse all transactions of the sender and update existing transactions
             for (id, tx) in descendants {
                 let current_pool = tx.subpool;
 
                 // If there's a nonce gap, we can shortcircuit
-                // This nonce check is basically checking if there is
-                //  a continuous thread of nonces in the txs BTMap (which holds all txs) 
-                // that starts with the current ocNonce.
-                // So we continue if the current descendant is part of that chain.
                 if next_nonce != id.nonce {
                     break
                 }

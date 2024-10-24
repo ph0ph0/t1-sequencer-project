@@ -55,7 +55,6 @@ impl From<Arc<TxEnvelope>> for TransactionId {
     }
 }
 
-// TODO: used?
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SenderTransactionCount {
     pub count: u64,
