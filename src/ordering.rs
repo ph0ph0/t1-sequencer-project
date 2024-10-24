@@ -48,6 +48,7 @@ where
         base_fee: u64,
     ) -> Priority<Self::PriorityValue> {
         // If the **effective** tip is zero, return Priority::None
+        // effective tip = min(max_fee_per_gas - base_fee, max_priority_fee_per_gas)
         transaction.effective_tip_per_gas(base_fee)
             .map(U256::from)
             .and_then(|tip| if tip.is_zero() {None} else {Some(tip)})

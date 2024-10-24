@@ -15,6 +15,7 @@ use alloy::{
 use crate::{
     identifiers::TransactionId,
     ordering::{Priority, TransactionOrdering},
+    pool::sequence::TransactionSequence,
 };
 
 pub struct PendingTransaction<O>
@@ -32,7 +33,6 @@ impl<O> PendingTransaction<O>
 where
     O: TransactionOrdering,
 {
-
     /// Creates a new `PendingTransaction`.
     pub fn new(
         submission_id: u64,
@@ -58,6 +58,11 @@ where
         self.sender
     }
 
+    /// Returns the priority of the transaction.
+    pub fn priority(&self) -> &Priority<O::PriorityValue> {
+        &self.priority
+    }
+
     /// The next transaction of the sender: `nonce + 1`
     pub(crate) fn unlocks(&self) -> TransactionId {
         TransactionId::new(self.sender, self.transaction.nonce() + 1)
@@ -70,8 +75,8 @@ where
     O: TransactionOrdering,
 {
     fn cmp(&self, other: &Self) -> Ordering {
-        // Primary sort by priority fee (descending)
-        other.priority.cmp(&self.priority)
+        // Primary sort by priority fee (ascending, best txs are at the end)
+        self.priority.cmp(&other.priority)
             // Secondary sort by address
             .then(self.sender.cmp(&other.sender))
     }
@@ -265,6 +270,15 @@ where
         }
         Some(tx.transaction)
     }
+
+    /// Returns the transaction sequence iterator
+    pub(crate) fn transaction_sequence(&self) -> TransactionSequence<O> {
+        TransactionSequence {
+            all: self.by_id.clone(),
+            independent: self.independent_transactions.clone(),
+            invalid: Default::default(),
+        }
+    }
 }
 
 
@@ -363,45 +377,53 @@ mod tests {
 
     #[tokio::test]
     async fn test_ordering() {
+        // Tests the ordering of transactions in the pool. We expect the transactions with the highest effective tip to be at the end of the sequence,
+        // since we pop from the end of the sequence during execution.
         let mut pool = PendingPool::<CoinbaseTipOrdering<TxEnvelope>>::new(CoinbaseTipOrdering::default());
-        let (tx1, sender1, _) = create_default_tx_and_sender().await; 
-        let (tx2, sender2, _) = create_tx_and_sender(20, 30, 100000, U256::ZERO, 0).await;
-
-        pool.add_transaction(Arc::clone(&tx1), 1);
-        pool.add_transaction(Arc::clone(&tx2), 1);
-
+        
         // effective tip = min(max_fee_per_gas - base_fee, max_priority_fee_per_gas)
         // effective tx1_tip = min(10 - 1, 20) = 9
+        let (tx1, sender1, _) = create_default_tx_and_sender().await; 
         // effective tx2_tip2 = min(20 - 1, 30) = 19
+        let (tx2, sender2, _) = create_tx_and_sender(20, 30, 100000, U256::ZERO, 0).await;
+        // effective tx3_tip = min(30 - 1, 40) = 29
+        let (tx3, sender3, _) = create_tx_and_sender(30, 40, 100000, U256::ZERO, 0).await; // max_fee_per_gas = 30
+        // effective tx4_tip = min(40 - 1, 50) = 39
+        let (tx4, sender4, _) = create_tx_and_sender(40, 50, 100000, U256::ZERO, 0).await; // max_fee_per_gas = 40
+
+        pool.add_transaction(Arc::clone(&tx4), 1);
+        pool.add_transaction(Arc::clone(&tx2), 1);
+
+        
         let ordered_txs: Vec<_> = pool.independent_transactions.iter().collect();
         assert_eq!(ordered_txs[0].sender, sender2);
         assert_eq!(ordered_txs[0].transaction.max_fee_per_gas(), 20);
         assert_eq!(ordered_txs[0].priority, Priority::Value(U256::from(19)));   
-        assert_eq!(ordered_txs[1].sender, sender1);
-        assert_eq!(ordered_txs[1].transaction.max_fee_per_gas(), 10);
-        assert_eq!(ordered_txs[1].priority, Priority::Value(U256::from(9)));
+        assert_eq!(ordered_txs[1].sender, sender4);
+        assert_eq!(ordered_txs[1].transaction.max_fee_per_gas(), 40);
+        assert_eq!(ordered_txs[1].priority, Priority::Value(U256::from(39)));
 
         // Add some more transactions
-        let (tx3, sender3, _) = create_tx_and_sender(30, 40, 100000, U256::ZERO, 0).await; // max_fee_per_gas = 30
-        let (tx4, sender4, _) = create_tx_and_sender(40, 50, 100000, U256::ZERO, 0).await; // max_fee_per_gas = 40
 
         pool.add_transaction(Arc::clone(&tx3), 1);
-        pool.add_transaction(Arc::clone(&tx4), 1);
-
+        pool.add_transaction(Arc::clone(&tx1), 1);
+        
         // Check ordering with new transactions present
         let ordered_txs: Vec<_> = pool.independent_transactions.iter().collect();
-        assert_eq!(ordered_txs[0].sender, sender4);
-        assert_eq!(ordered_txs[0].transaction.max_fee_per_gas(), 40);
-        assert_eq!(ordered_txs[0].priority, Priority::Value(U256::from(39)));   
-        assert_eq!(ordered_txs[1].sender, sender3);
-        assert_eq!(ordered_txs[1].transaction.max_fee_per_gas(), 30);
-        assert_eq!(ordered_txs[1].priority, Priority::Value(U256::from(29)));
-        assert_eq!(ordered_txs[2].sender, sender2);
-        assert_eq!(ordered_txs[2].transaction.max_fee_per_gas(), 20);
-        assert_eq!(ordered_txs[2].priority, Priority::Value(U256::from(19)));
-        assert_eq!(ordered_txs[3].sender, sender1);
-        assert_eq!(ordered_txs[3].transaction.max_fee_per_gas(), 10);
-        assert_eq!(ordered_txs[3].priority, Priority::Value(U256::from(9)));
+
+        // Reorganize assert statements to reflect the smallest max_fee_per_gas first
+        assert_eq!(ordered_txs[0].sender, sender1);
+        assert_eq!(ordered_txs[0].transaction.max_fee_per_gas(), 10);
+        assert_eq!(ordered_txs[0].priority, Priority::Value(U256::from(9)));
+        assert_eq!(ordered_txs[1].sender, sender2);
+        assert_eq!(ordered_txs[1].transaction.max_fee_per_gas(), 20);
+        assert_eq!(ordered_txs[1].priority, Priority::Value(U256::from(19)));
+        assert_eq!(ordered_txs[2].sender, sender3);
+        assert_eq!(ordered_txs[2].transaction.max_fee_per_gas(), 30);
+        assert_eq!(ordered_txs[2].priority, Priority::Value(U256::from(29)));
+        assert_eq!(ordered_txs[3].sender, sender4);
+        assert_eq!(ordered_txs[3].transaction.max_fee_per_gas(), 40);
+        assert_eq!(ordered_txs[3].priority, Priority::Value(U256::from(39)));
     }
 }
 

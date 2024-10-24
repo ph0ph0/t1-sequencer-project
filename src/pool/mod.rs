@@ -565,6 +565,12 @@ where
         self.add_transaction_to_subpool(to, tx.clone());
         Some(tx)
     }
+
+    /// Returns the transaction sequence iterator
+    pub fn transaction_sequence(&self) -> TransactionSequence<O> {
+        self.pending_transactions.transaction_sequence()
+    }
+    
 }
 
 /// The internal transaction typed used by `Pool` which contains additional info used for
@@ -1107,6 +1113,102 @@ mod tests {
         // Test with maximum u128 values
         assert!(!Pool::<CoinbaseTipOrdering<TxEnvelope>>::is_underpriced(u128::MAX - 1, u128::MAX));
         assert!(Pool::<CoinbaseTipOrdering<TxEnvelope>>::is_underpriced(u128::MAX, u128::MAX - 1));
+    }
+
+    #[tokio::test]
+    async fn test_transaction_sequence_same_sender() {
+        // Tests the ordering of transactions in the pool. We expect transactions from the same sender to come out in order of nonce.
+        let mut pool = create_test_pool();
+        let (sender, private_key) = create_sender();
+        let on_chain_balance = U256::from(1_000_000_000);
+        let on_chain_nonce = 0;
+
+        // Create transactions with different nonces and priority fees
+        let tx1 = create_tx_envelope_with_sender(private_key.clone(), sender, 20, 10, 100_000, U256::ZERO, 2).await;
+        let tx2 = create_tx_envelope_with_sender(private_key.clone(), sender, 25, 15, 100_000, U256::ZERO, 1).await;
+        let tx3 = create_tx_envelope_with_sender(private_key.clone(), sender, 15, 5, 100_000, U256::ZERO, 0).await;
+        let tx4 = create_tx_envelope_with_sender(private_key.clone(), sender, 30, 20, 100_000, U256::ZERO, 3).await;
+
+        // Add transactions to the pool in a mixed order
+        pool.add_transaction(tx2.clone(), on_chain_balance, on_chain_nonce).unwrap();
+        pool.add_transaction(tx4.clone(), on_chain_balance, on_chain_nonce).unwrap();
+        pool.add_transaction(tx1.clone(), on_chain_balance, on_chain_nonce).unwrap();
+        pool.add_transaction(tx3.clone(), on_chain_balance, on_chain_nonce).unwrap();
+
+        // Create transaction sequence
+        let mut sequence = pool.transaction_sequence();
+
+        // Check that transactions come out in the correct order (by nonce)
+        assert_eq!(sequence.next().unwrap().transaction().tx_hash(), tx3.tx_hash());
+        assert_eq!(sequence.next().unwrap().transaction().tx_hash(), tx2.tx_hash());
+        assert_eq!(sequence.next().unwrap().transaction().tx_hash(), tx1.tx_hash());
+        assert_eq!(sequence.next().unwrap().transaction().tx_hash(), tx4.tx_hash());
+        assert!(sequence.next().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_transaction_sequence_multiple_senders() {
+        // Tests the ordering of transactions in the pool. We expect the transactions with the highest effective tip to be at the end of the sequence, since we pop from the end of the sequence during execution.
+        let mut pool = create_test_pool();
+        let (sender1, private_key1) = create_sender();
+        let (sender2, private_key2) = create_sender();
+        let on_chain_balance = U256::from(1_000_000_000);
+
+        // Create transactions for sender1 with different nonces and priority fees
+        // private_key, sender , max_fee_per_gas: u128, max_priority_fee_per_gas: u128, gas_limit: u64, value: U256, nonce: u64
+        let tx1_1 = create_tx_envelope_with_sender(private_key1.clone(), sender1, 20, 10, 100_000, U256::ZERO, 0).await;
+        let tx1_2 = create_tx_envelope_with_sender(private_key1.clone(), sender1, 25, 15, 100_000, U256::ZERO, 1).await;
+        let tx1_3 = create_tx_envelope_with_sender(private_key1.clone(), sender1, 30, 20, 100_000, U256::ZERO, 2).await;
+
+        // Create transactions for sender2 with different nonces and priority fees
+        let tx2_1 = create_tx_envelope_with_sender(private_key2.clone(), sender2, 15, 5, 100_000, U256::ZERO, 0).await;
+        let tx2_2 = create_tx_envelope_with_sender(private_key2.clone(), sender2, 20, 10, 100_000, U256::ZERO, 1).await;
+        let tx2_3 = create_tx_envelope_with_sender(private_key2.clone(), sender2, 35, 25, 100_000, U256::ZERO, 2).await;
+
+        // Add transactions to the pool in a mixed order
+        pool.add_transaction(tx1_2.clone(), on_chain_balance, 0).unwrap();
+        pool.add_transaction(tx2_3.clone(), on_chain_balance, 0).unwrap();
+        pool.add_transaction(tx1_1.clone(), on_chain_balance, 0).unwrap();
+        pool.add_transaction(tx2_1.clone(), on_chain_balance, 0).unwrap();
+        pool.add_transaction(tx1_3.clone(), on_chain_balance, 0).unwrap();
+        pool.add_transaction(tx2_2.clone(), on_chain_balance, 0).unwrap();
+
+        // Create transaction sequence
+        let mut sequence = pool.transaction_sequence();
+
+        // NOTE: For debugging purposes, uncomment the code below loop through sequence and print each transaction
+        // for i in 0..6 {
+        //     let next = sequence.next().unwrap();
+        //     let sender = next.sender();
+            
+        //     // Avoiding unnecessary allocation, using &str instead of String
+        //     let name = if sender == sender1 { "sender1" } else { "sender2" };
+
+        //     // Using match instead of multiple if-else statements
+        //     let tx_name = match next.transaction().tx_hash() {
+        //         hash if hash == tx1_1.tx_hash() => "tx1_1",
+        //         hash if hash == tx1_2.tx_hash() => "tx1_2",
+        //         hash if hash == tx1_3.tx_hash() => "tx1_3",
+        //         hash if hash == tx2_1.tx_hash() => "tx2_1",
+        //         hash if hash == tx2_2.tx_hash() => "tx2_2",
+        //         _ => "tx2_3",
+        //     };
+
+        //     println!(
+        //         "tx_name: {:?}, tx hash of {}th: {:?}, effective tip: {:?}, sender: {:?}",
+        //         tx_name, i, next.transaction().tx_hash(), next.priority(), name
+        //     );
+        // }
+
+
+        // Check that transactions come out in the correct order (by sender and nonce)
+        assert_eq!(sequence.next().unwrap().transaction().tx_hash(), tx1_1.tx_hash());
+        assert_eq!(sequence.next().unwrap().transaction().tx_hash(), tx1_2.tx_hash());
+        assert_eq!(sequence.next().unwrap().transaction().tx_hash(), tx1_3.tx_hash());
+        assert_eq!(sequence.next().unwrap().transaction().tx_hash(), tx2_1.tx_hash());
+        assert_eq!(sequence.next().unwrap().transaction().tx_hash(), tx2_2.tx_hash());
+        assert_eq!(sequence.next().unwrap().transaction().tx_hash(), tx2_3.tx_hash());
+        assert!(sequence.next().is_none());
     }
 }
 
