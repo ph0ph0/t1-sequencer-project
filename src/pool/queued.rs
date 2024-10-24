@@ -219,7 +219,6 @@ mod tests {
     use super::*;
     use alloy::primitives::U256;
     use crate::test_utils::helpers::{create_default_tx_and_sender, create_tx, create_tx_and_sender};
-    use crate::ordering::CoinbaseTipOrdering;
 
     #[tokio::test]
     async fn test_add_transaction() {
