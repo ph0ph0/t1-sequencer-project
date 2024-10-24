@@ -13,7 +13,7 @@ use crate::{
     identifiers::TransactionId,
 };
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct AllTransactions
 where 
 {
@@ -99,7 +99,7 @@ mod tests {
 
     use crate::test_utils::helpers::{
         create_default_tx_and_sender, 
-        create_pending_pool_internal_tx,
+        create_pool_internal_tx,
         create_tx,
     };
 
@@ -109,7 +109,7 @@ mod tests {
         let sender = Address::random();
         let (tx, _, _) = create_default_tx_and_sender().await;
         let tx_id = TransactionId::from(Arc::clone(&tx));
-        let pool_internal_tx = create_pending_pool_internal_tx(Arc::clone(&tx));
+        let pool_internal_tx = create_pool_internal_tx(Arc::clone(&tx));
         all_txs.txs.insert(tx_id, pool_internal_tx);
 
         all_txs.tx_inc(sender);
@@ -135,7 +135,7 @@ mod tests {
         let (tx, sender, _) = create_default_tx_and_sender().await;
         let tx_hash = tx.tx_hash();
         let tx_id = TransactionId::from(Arc::clone(&tx));
-        let pool_internal_tx = create_pending_pool_internal_tx(Arc::clone(&tx));
+        let pool_internal_tx = create_pool_internal_tx(Arc::clone(&tx));
 
         // Insert the transaction
         all_txs.txs.insert(tx_id.clone(), pool_internal_tx);
@@ -175,9 +175,9 @@ mod tests {
         let tx3_id = TransactionId::from(Arc::clone(&tx3));
 
         // Insert the transactions into the pool
-        all_txs.txs.insert(tx1_id.clone(), create_pending_pool_internal_tx(Arc::clone(&tx1)));
-        all_txs.txs.insert(tx2_id.clone(), create_pending_pool_internal_tx(Arc::clone(&tx2)));
-        all_txs.txs.insert(tx3_id.clone(), create_pending_pool_internal_tx(Arc::clone(&tx3)));
+        all_txs.txs.insert(tx1_id.clone(), create_pool_internal_tx(Arc::clone(&tx1)));
+        all_txs.txs.insert(tx2_id.clone(), create_pool_internal_tx(Arc::clone(&tx2)));
+        all_txs.txs.insert(tx3_id.clone(), create_pool_internal_tx(Arc::clone(&tx3)));
 
         // Get the descendants
         let descendants: Vec<_> = all_txs.descendant_txs_mut(&tx1_id).collect();
@@ -199,27 +199,6 @@ mod tests {
         let non_existent_descendants: Vec<_> = all_txs.descendant_txs_mut(&tx_two_id).collect();
         assert!(non_existent_descendants.is_empty());
     }
-
-    // #[test]
-    // fn test_descendant_txs_mut() {
-    //     let mut all_txs = AllTransactions::default();
-    //     let sender = Address::random();
-    //     let tx1 = create_tx(sender, 0);
-    //     let tx2 = create_tx(sender, 1);
-    //     let tx3 = create_tx(sender, 2);
-
-    //     all_txs.insert(Arc::clone(&tx1), SubPool::Pending);
-    //     all_txs.insert(Arc::clone(&tx2), SubPool::Pending);
-    //     all_txs.insert(Arc::clone(&tx3), SubPool::Pending);
-
-    //     let tx1_id = TransactionId::from(Arc::clone(&tx1));
-    //     let descendants: Vec<_> = all_txs.descendant_txs_mut(&tx1_id).collect();
-
-    //     assert_eq!(descendants.len(), 3);
-    //     assert_eq!(descendants[0].0, &tx1_id);
-    //     assert_eq!(descendants[1].0, &TransactionId::from(Arc::clone(&tx2)));
-    //     assert_eq!(descendants[2].0, &TransactionId::from(Arc::clone(&tx3)));
-    // }
 }
 
 
