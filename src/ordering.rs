@@ -12,6 +12,7 @@ pub trait TransactionOrdering: Send + Sync + 'static {
     
     type PriorityValue: Ord + Clone + Default + fmt::Debug + Send + Sync;
 
+    /// Returns the priority of the transaction.
     fn priority(
         &self,
         transaction: &TxEnvelope,
@@ -26,6 +27,7 @@ pub enum Priority<T: Ord + Clone> {
 }
 
 impl<T: Ord + Clone> From<Option<T>> for Priority<T> {
+    /// Converts an `Option<T>` to a `Priority<T>`.
     fn from(value: Option<T>) -> Priority<T> {
         value.map_or(Self::None, Priority::Value)
     }
@@ -42,6 +44,7 @@ where
     
     type PriorityValue = U256;
 
+    /// Returns the priority of the transaction.
     fn priority(
         &self,
         transaction: &TxEnvelope,

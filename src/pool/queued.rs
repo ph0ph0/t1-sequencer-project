@@ -23,7 +23,6 @@ use crate::identifiers::{TransactionId, SenderTransactionCount};
 
 #[derive(PartialOrd, Eq, PartialEq, Debug)]
 pub struct QueuedPoolTransaction {
-
     /// Id to indicate when transaction was added to pool
     submission_id: u64,
     /// The transaction
@@ -59,13 +58,14 @@ impl From<Arc<TxEnvelope>> for QueuedOrderedTransaction {
 pub struct QueuedOrderedTransaction(Arc<TxEnvelope>);
 
 impl QueuedOrderedTransaction {
+    /// Returns the max_fee_per_gas of the transaction
     pub fn max_fee_per_gas(&self) -> u128 {
         self.0.max_fee_per_gas()
     }
 }
 
 impl Ord for QueuedOrderedTransaction {
-    // Sort in reverse order (ie higher gas fees towards end of set)
+    // Sort in descending order (ie higher gas fees towards end of set)
     fn cmp(&self, other: &Self) -> Ordering {
         other.max_fee_per_gas()
             .cmp(&self.max_fee_per_gas())
@@ -97,6 +97,8 @@ impl Debug for QueuedOrderedTransaction {
         write!(f, "QueuedOrderedTransaction({:?})", self.0)
     }
 }
+
+#[derive(Debug, Clone)]
 pub struct QueuedPool {
     /// Keeps track of the last transaction submitted to the pool
     current_submission_id: u64,
@@ -123,7 +125,8 @@ impl QueuedPool {
         self.by_id.get(id)
     }
 
-     fn next_id(&mut self) -> u64 {
+    /// Returns the next submission id
+    fn next_id(&mut self) -> u64 {
         let id = self.current_submission_id;
         self.current_submission_id = self.current_submission_id.wrapping_add(1);
         id
@@ -169,6 +172,7 @@ impl QueuedPool {
         }
     }
 
+    /// Removes a transaction from the pool and returns the transaction.
     pub(crate) fn remove_transaction(&mut self, id: &TransactionId) -> Option<Arc<TxEnvelope>> {
         let tx = self.by_id.remove(id)?;
         self.best.remove(&tx);
@@ -176,6 +180,7 @@ impl QueuedPool {
         Some(tx.transaction.0.into())
     }
 
+    /// Removes a sender count from the pool.
     fn remove_sender_count(&mut self, sender: Address) {
         match self.sender_transaction_count.entry(sender) {
             HashMapEntry::Occupied(mut entry) => {

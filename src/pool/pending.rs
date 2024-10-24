@@ -21,11 +21,14 @@ use crate::{
 pub struct PendingTransaction<O>
 where
     O: TransactionOrdering,
-{
+{   
+    /// The id of the submission that added this transaction to the pool
     submission_id: u64,
+    /// The transaction
     transaction: Arc<TxEnvelope>,
+    /// The priority of the transaction, used for ordering
     priority: Priority<O::PriorityValue>,
-    // alloy Transaction type doesn't contain a sender field, so we must extract it from the TxEnvelope
+    /// The sender of the transaction
     sender: Address
 }
 
@@ -134,6 +137,7 @@ where
 }
 
 
+#[derive(Debug, Clone)]
 pub struct PendingPool<O> 
 where
     O: TransactionOrdering,
@@ -172,8 +176,9 @@ where
             highest_nonces: BTreeSet::default(),
         }
     }
+
     /// Retrieves a transaction with the given ID from the pool, if it exists.
-    fn get(&self, id: &TransactionId) -> Option<&PendingTransaction<O>> {
+    pub fn get(&self, id: &TransactionId) -> Option<&PendingTransaction<O>> {
         self.by_id.get(id)
     }
 
@@ -202,7 +207,7 @@ where
     /// # Panics
     ///
     /// if the transaction is already included
-    pub fn add_transaction(
+    pub(crate) fn add_transaction(
         &mut self,
         tx: Arc<TxEnvelope>,
         base_fee: u64,

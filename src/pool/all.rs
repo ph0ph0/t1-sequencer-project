@@ -13,7 +13,7 @@ use crate::{
     identifiers::TransactionId,
 };
 
-#[derive(Default, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct AllTransactions
 where 
 {

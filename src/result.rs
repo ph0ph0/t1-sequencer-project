@@ -13,6 +13,7 @@ use crate::{
     pool::state::{SubPool, TxState},
 };
 
+/// The result of adding a transaction to the pool.
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub enum AddedTransaction
 {
@@ -25,6 +26,7 @@ pub enum AddedTransaction
     }
 }
 
+/// The result of adding a transaction to the pending pool.
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub struct AddedPendingTransaction {
     /// Inserted transaction.
@@ -76,8 +78,10 @@ pub(crate) enum Destination {
     Pool(SubPool),
 }
 
+/// The result of inserting a transaction into the pool.
 pub(crate) type InsertResult = Result<InsertOk, InsertErr>;
 
+/// The success result of inserting a transaction into the pool.
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub struct InsertOk {
     /// Reference to the transaction
@@ -92,6 +96,7 @@ pub struct InsertOk {
     pub updates: Vec<PoolUpdate>
 }
 
+/// The error result of inserting a transaction into the pool.
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub(crate) enum InsertErr {
     /// Unknown transaction error, currently only Eip1559 transactions are handled

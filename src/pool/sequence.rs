@@ -13,6 +13,7 @@ use crate::{
     identifiers::TransactionId,
 };
 
+#[derive(Debug, Clone)]
 pub struct TransactionSequence<O>
 where
     O: TransactionOrdering,
@@ -58,6 +59,7 @@ impl<O: TransactionOrdering> Default for TransactionSequence<O> {
 impl<O: TransactionOrdering> Iterator for TransactionSequence<O> {
     type Item = Arc<PendingTransaction<O>>;
 
+    /// Returns the next transaction in the sequence, which can be executed against the current state.
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             // Remove the next independent tx with the highest priority
@@ -87,6 +89,7 @@ impl<O: TransactionOrdering> Iterator for TransactionSequence<O> {
 ///
 /// Filter out transactions are marked as invalid:
 /// [`TransactionSequence::mark_invalid`]
+#[derive(Debug, Clone)]
 pub struct TransactionSequenceFilter<O, P>
 where
     O: TransactionOrdering,
@@ -112,6 +115,7 @@ where
 {
     type Item = <TransactionSequence<O> as Iterator>::Item;
 
+    /// Filters according to the predicate and returns the next transaction in the sequence, which can be executed against the current state.
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             let best = self.transaction_sequence.next()?;

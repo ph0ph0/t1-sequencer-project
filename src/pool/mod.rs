@@ -30,6 +30,7 @@ use crate::{
 };
 
 
+#[derive(Debug, Clone)]
 pub struct PoolConfig {
     /// Max number of transactions a user can have in the pool
     pub max_account_slots: usize,
@@ -43,7 +44,7 @@ pub struct PoolConfig {
     pub pending_base_fee: u64
 }
 
-
+#[derive(Debug, Clone)]
 pub struct Pool<O>
 where
     O: TransactionOrdering,
