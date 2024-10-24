@@ -35,7 +35,7 @@ where
     pub(crate) new_transaction_receiver: Option<Receiver<PendingTransaction<O>>>,
 }
 
-impl<T: TransactionOrdering> TransactionSequence<T> {
+impl<O: TransactionOrdering> TransactionSequence<O> {
     /// Mark the transaction and it's descendants as invalid.
     pub(crate) fn mark_invalid(&mut self, tx: &Arc<TxEnvelope>) {
         self.invalid.insert(*tx.tx_hash());
@@ -45,12 +45,12 @@ impl<T: TransactionOrdering> TransactionSequence<T> {
     ///
     /// Note: for a transaction with nonce higher than the current on chain nonce this will always
     /// return an ancestor since all transaction in this pool are gapless.
-    pub(crate) fn ancestor(&self, id: &TransactionId) -> Option<&PendingTransaction<T>> {
+    pub(crate) fn ancestor(&self, id: &TransactionId) -> Option<&PendingTransaction<O>> {
         self.all.get(&id.unchecked_ancestor()?)
     }
 
     /// Non-blocking read on the new pending transactions subscription channel
-    fn try_recv(&mut self) -> Option<PendingTransaction<T>> {
+    fn try_recv(&mut self) -> Option<PendingTransaction<O>> {
         loop {
             match self.new_transaction_receiver.as_mut()?.try_recv() {
                 Ok(tx) => return Some(tx),
@@ -83,6 +83,34 @@ impl<T: TransactionOrdering> TransactionSequence<T> {
                 self.independent.insert(pending_tx.clone());
             }
             self.all.insert(tx_id, pending_tx);
+        }
+    }
+}
+
+impl<O: TransactionOrdering> Iterator for TransactionSequence<O> {
+    type Item = Arc<PendingTransaction<O>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            self.add_new_transactions();
+            // Remove the next independent tx with the highest priority
+            let best = self.independent.pop_last()?;
+            let hash = best.transaction().tx_hash();
+
+            // skip transactions that were marked as invalid
+            if self.invalid.contains(hash) {
+                println!(
+                    "[{:?}] skipping invalid transaction",
+                    hash
+                );
+                continue
+            }
+
+            // Insert transactions that just got unlocked.
+            if let Some(unlocked) = self.all.get(&best.unlocks()) {
+                self.independent.insert(unlocked.clone());
+            }
+            return Some(Arc::new(best));
         }
     }
 }
