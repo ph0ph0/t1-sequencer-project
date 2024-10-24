@@ -27,12 +27,6 @@ where
     pub(crate) independent: BTreeSet<PendingTransaction<O>>,
     /// There might be the case where a yielded transactions is invalid, this will track it.
     pub(crate) invalid: HashSet<TxHash>,
-    /// Used to receive any new pending transactions that have been added to the pool after this
-    /// iterator was static fileted
-    ///
-    /// These new pending transactions are inserted into this iterator's pool before yielding the
-    /// next value
-    pub(crate) new_transaction_receiver: Option<Receiver<PendingTransaction<O>>>,
 }
 
 impl<O: TransactionOrdering> TransactionSequence<O> {
@@ -48,43 +42,6 @@ impl<O: TransactionOrdering> TransactionSequence<O> {
     pub(crate) fn ancestor(&self, id: &TransactionId) -> Option<&PendingTransaction<O>> {
         self.all.get(&id.unchecked_ancestor()?)
     }
-
-    /// Non-blocking read on the new pending transactions subscription channel
-    fn try_recv(&mut self) -> Option<PendingTransaction<O>> {
-        loop {
-            match self.new_transaction_receiver.as_mut()?.try_recv() {
-                Ok(tx) => return Some(tx),
-                // note TryRecvError::Lagged can be returned here, which is an error that attempts
-                // to correct itself on consecutive try_recv() attempts
-
-                // the cost of ignoring this error is allowing old transactions to get
-                // overwritten after the chan buffer size is met
-                Err(TryRecvError::Lagged(_)) => {
-                    // Handle the case where the receiver lagged too far behind.
-                    // `num_skipped` indicates the number of messages that were skipped.
-                    continue
-                }
-
-                // this case is still better than the existing iterator behavior where no new
-                // pending txs are surfaced to consumers
-                Err(_) => return None,
-            }
-        }
-    }
-
-    /// Checks for new transactions that have come into the `PendingPool` after this iterator was
-    /// created and inserts them
-    fn add_new_transactions(&mut self) {
-        while let Some(pending_tx) = self.try_recv() {
-            let sender = pending_tx.sender();
-            let nonce = pending_tx.transaction().nonce();
-            let tx_id = TransactionId::new(sender, nonce);
-            if self.ancestor(&tx_id).is_none() {
-                self.independent.insert(pending_tx.clone());
-            }
-            self.all.insert(tx_id, pending_tx);
-        }
-    }
 }
 
 impl<O: TransactionOrdering> Iterator for TransactionSequence<O> {
@@ -92,7 +49,6 @@ impl<O: TransactionOrdering> Iterator for TransactionSequence<O> {
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            self.add_new_transactions();
             // Remove the next independent tx with the highest priority
             let best = self.independent.pop_last()?;
             let hash = best.transaction().tx_hash();
@@ -111,6 +67,47 @@ impl<O: TransactionOrdering> Iterator for TransactionSequence<O> {
                 self.independent.insert(unlocked.clone());
             }
             return Some(Arc::new(best));
+        }
+    }
+}
+
+/// A[`TransactionSequence`] implementation that filters the
+/// transactions of iter with predicate.
+///
+/// Filter out transactions are marked as invalid:
+/// [`TransactionSequence::mark_invalid`]
+pub struct TransactionSequenceFilter<O, P>
+where
+    O: TransactionOrdering,
+{
+    pub(crate) transaction_sequence: TransactionSequence<O>,
+    pub(crate) predicate: P,
+}
+
+impl<O, P> TransactionSequenceFilter<O, P>
+where
+    O: TransactionOrdering,
+{
+    /// Create a new [`TransactionSequenceFilter`] with the given predicate.
+    pub(crate) const fn new(transaction_sequence: TransactionSequence<O>, predicate: P) -> Self {
+        Self { transaction_sequence, predicate }
+    }
+}
+
+impl<O, P> Iterator for TransactionSequenceFilter<O, P>
+where
+    O: TransactionOrdering,
+    P: FnMut(&<TransactionSequence<O> as Iterator>::Item) -> bool,
+{
+    type Item = <TransactionSequence<O> as Iterator>::Item;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let best = self.transaction_sequence.next()?;
+            if (self.predicate)(&best) {
+                return Some(best)
+            }
+            self.transaction_sequence.mark_invalid(&best.transaction());
         }
     }
 }
