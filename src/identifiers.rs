@@ -61,3 +61,59 @@ pub struct SenderTransactionCount {
     pub count: u64,
     pub last_submission_id: u64
 }
+
+
+#[cfg(test)]
+mod tests {
+
+    use super::*;
+    use alloy::primitives::Address;
+
+    #[test]
+    fn test_ancestor() {
+        let sender = Address::random();
+        
+        // Case: tx_nonce > on_chain_nonce
+        assert_eq!(
+            TransactionId::ancestor(5, 3, sender),
+            Some(TransactionId::new(sender, 4))
+        );
+
+        // Case: tx_nonce <= on_chain_nonce
+        assert_eq!(TransactionId::ancestor(3, 3, sender), None);
+        assert_eq!(TransactionId::ancestor(2, 3, sender), None);
+    }
+
+    #[test]
+    fn test_unchecked_ancestor() {
+        let sender = Address::random();
+        let tx_id = TransactionId::new(sender, 5);
+
+        // Case: nonce > 0
+        assert_eq!(
+            tx_id.unchecked_ancestor(),
+            Some(TransactionId::new(sender, 4))
+        );
+
+        // Case: nonce == 0
+        let tx_id_zero = TransactionId::new(sender, 0);
+        assert_eq!(tx_id_zero.unchecked_ancestor(), None);
+    }
+
+    #[test]
+    fn test_descendant() {
+        let sender = Address::random();
+        let tx_id = TransactionId::new(sender, 5);
+
+        assert_eq!(tx_id.descendant(), TransactionId::new(sender, 6));
+    }
+
+    #[test]
+    fn test_next_nonce() {
+        let sender = Address::random();
+        let tx_id = TransactionId::new(sender, 5);
+
+        assert_eq!(tx_id.next_nonce(), 6);
+    }
+}
+
