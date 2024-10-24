@@ -28,6 +28,22 @@ where
     sender: Address
 }
 
+impl<O> PendingTransaction<O>
+where
+    O: TransactionOrdering,
+{
+    /// Returns a reference to the transaction.
+    pub fn transaction(&self) -> &Arc<TxEnvelope> {
+        &self.transaction
+    }
+
+    /// Returns the sender of the transaction.
+    pub fn sender(&self) -> Address {
+        self.sender
+    }
+}
+
+
 impl<O> Ord for PendingTransaction<O> 
 where
     O: TransactionOrdering,
