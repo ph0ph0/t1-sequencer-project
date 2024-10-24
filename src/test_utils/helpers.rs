@@ -100,9 +100,16 @@ pub async fn create_default_tx_and_sender() -> (Arc<TxEnvelope>, Address, Signin
     ).await
 }
 
+pub async fn create_default_tx_envelope_and_sender() -> (TxEnvelope, Address, SigningKey<Secp256k1>) {
+    let (tx, sender, private_key) = create_default_tx_and_sender().await;
+    let tx_envelope = Arc::try_unwrap(tx).expect("Failed to unwrap Arc<TxEnvelope>");
+    (tx_envelope, sender, private_key)
+}
+
+
 // === Pool Internal Transaction ===
 
-pub fn create_pending_pool_internal_tx(tx: Arc<TxEnvelope>) -> PoolInternalTransaction {
+pub fn create_pool_internal_tx(tx: Arc<TxEnvelope>) -> PoolInternalTransaction {
     let mut state = TxState::default();
     state.insert(TxState::NO_PARKED_ANCESTORS);
     state.insert(TxState::NO_NONCE_GAPS);
@@ -126,3 +133,30 @@ pub fn create_pending_pool_internal_tx(tx: Arc<TxEnvelope>) -> PoolInternalTrans
 
     pool_internal_tx
 }
+
+pub fn create_pool_internal_tx_with_cumulative_cost(tx: Arc<TxEnvelope>, cumulative_cost: U256) -> PoolInternalTransaction {
+    let mut state = TxState::default();
+    state.insert(TxState::NO_PARKED_ANCESTORS);
+    state.insert(TxState::NO_NONCE_GAPS);
+    state.insert(TxState::ENOUGH_BALANCE);
+    state.insert(TxState::NOT_TOO_MUCH_GAS);
+    state.insert(TxState::ENOUGH_FEE_CAP_BLOCK);
+    state.insert(TxState::ENOUGH_BLOB_FEE_CAP_BLOCK);
+
+    assert!(state.is_pending());
+
+    let subpool = SubPool::from(state);
+
+    assert_eq!(subpool, SubPool::Pending);
+
+    let pool_internal_tx = PoolInternalTransaction {
+        transaction: Arc::clone(&tx),
+        subpool,
+        state,
+        cumulative_cost,
+    };
+
+    pool_internal_tx
+}
+
+
