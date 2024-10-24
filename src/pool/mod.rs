@@ -50,7 +50,7 @@ pub struct PoolConfig {
 
 pub struct Pool<O>
 where
-    O: TransactionOrdering + PartialEq + Eq + PartialOrd + Ord,
+    O: TransactionOrdering,
 {
     config: PoolConfig,
     /// All transactions in the pool, grouped by sender, ordered by nonce
@@ -68,9 +68,9 @@ where
 
 impl<O> Pool<O> 
 where
-    O: TransactionOrdering + PartialEq + Eq + PartialOrd + Ord,
+    O: TransactionOrdering,
 {
-    pub(crate) fn add_transaction(
+    pub fn add_transaction(
         &mut self,
         tx: TxEnvelope,
         on_chain_balance: U256,
@@ -86,7 +86,6 @@ where
         }
 
         // TODO: Update user info?
-
 
         match self.insert_tx(tx, on_chain_balance, on_chain_nonce) {
             Ok(InsertOk {transaction, move_to, replaced_tx, updates, ..}) => {
@@ -171,7 +170,8 @@ where
         self.all_transactions.contains(tx_hash)
     }
 
-    pub(crate) fn insert_tx(
+    /// Attempts to insert a transaction into the pool
+    fn insert_tx(
         &mut self,
         transaction: TxEnvelope,
         on_chain_balance: U256,
@@ -453,7 +453,7 @@ where
             })
         }
 
-        if on_chain_nonce <= tx_nonce {
+        if on_chain_nonce > tx_nonce {
             return Err(InsertErr::InvalidTxNonce {
                 on_chain_nonce,
                 tx_nonce,
@@ -574,7 +574,7 @@ where
 
 /// The internal transaction typed used by `Pool` which contains additional info used for
 /// determining the current state of the transaction.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct PoolInternalTransaction {
     /// The actual transaction object.
     pub(crate) transaction: Arc<TxEnvelope>,
@@ -611,3 +611,511 @@ impl PoolInternalTransaction {
         U256::from(max_fee_per_gas) * U256::from(gas_limit) + value
     }
 }
+
+
+#[cfg(test)]
+mod tests {
+
+    // test the different actions of add/remove/update etc
+
+    use super::*;
+    use alloy::primitives::{Address, U256};
+    use crate::test_utils::helpers::{create_default_tx_and_sender, create_tx, create_tx_and_sender, create_pool_internal_tx, create_pool_internal_tx_with_cumulative_cost, create_default_tx_envelope_and_sender, create_tx_envelope_with_sender, create_sender};
+    use crate::pool::{
+        PoolConfig,
+        AllTransactions,
+        PendingPool,
+        QueuedPool,
+        TransactionSequence,
+    };
+    use crate::ordering::CoinbaseTipOrdering;
+    use crate::result::{AddedTransaction, PoolResult, PoolError, PoolErrorKind}; 
+
+    fn create_test_pool() -> Pool<CoinbaseTipOrdering<TxEnvelope>> {
+        create_test_pool_with_config(PoolConfig {
+            max_account_slots: 16,
+            block_gas_limit: 30_000_000,
+            minimal_protocol_basefee: 5,
+            pending_base_fee: 10,
+        })
+    }
+
+    fn create_test_pool_with_config(config: PoolConfig) -> Pool<CoinbaseTipOrdering<TxEnvelope>> {
+        Pool::<CoinbaseTipOrdering<TxEnvelope>> {
+            config,
+            all_transactions: AllTransactions::default(),
+            pending_transactions: PendingPool::new(CoinbaseTipOrdering::default()),
+            transaction_sequence: TransactionSequence::new(CoinbaseTipOrdering::default()),
+            queued_transactions: QueuedPool::default(),
+        }
+    }
+
+
+    // let config = PoolConfig {
+    //         max_account_slots: 16,
+    //         block_gas_limit: 30_000_000,
+    //         minimal_protocol_basefee: 7,
+    //         pending_base_fee: 10,
+    //     };
+    //     let mut pool = Pool::<CoinbaseTipOrdering<TxEnvelope>> {
+    //         config,
+    //         all_transactions: AllTransactions::default(),
+    //         pending_transactions: PendingPool::new(CoinbaseTipOrdering::default()),
+    //         transaction_sequence: TransactionSequence::new(CoinbaseTipOrdering::default()),
+    //         queued_transactions: QueuedPool::default(),
+    //     };
+
+    #[tokio::test]
+    async fn test_pool_internal_transaction_cumulative_cost() {
+        let (tx, sender, _) = create_default_tx_and_sender().await;
+        let pool_internal_tx = create_pool_internal_tx(Arc::clone(&tx));
+
+        // Calculate expected cost
+        let signed_tx = tx.as_eip1559().expect("Should be EIP-1559 transaction");
+        let unsigned_tx = signed_tx.tx();
+        let expected_cost = U256::from(unsigned_tx.max_fee_per_gas) * U256::from(unsigned_tx.gas_limit) + unsigned_tx.value;
+
+        // Test cost calculation
+        assert_eq!(pool_internal_tx.cost(), expected_cost);
+
+        // Test next_cumulative_cost with zero initial cumulative_cost
+        assert_eq!(pool_internal_tx.next_cumulative_cost(), expected_cost);
+
+        // Test with non-zero cumulative_cost
+        let initial_cumulative_cost = U256::from(1_000_000);
+        let pool_internal_tx_with_cumulative = create_pool_internal_tx_with_cumulative_cost(Arc::clone(&tx), initial_cumulative_cost);
+
+        assert_eq!(pool_internal_tx_with_cumulative.next_cumulative_cost(), expected_cost + initial_cumulative_cost);
+    }
+
+    #[tokio::test]
+    async fn test_pool_internal_transaction_with_different_gas_values() {
+        let (tx1, _, _) = create_tx_and_sender(20, 10, 100000, U256::ZERO, 0).await;
+        let (tx2, _, _) = create_tx_and_sender(30, 15, 150000, U256::from(1000), 1).await;
+
+        let pool_internal_tx1 = create_pool_internal_tx(Arc::clone(&tx1));
+        let pool_internal_tx2 = create_pool_internal_tx(Arc::clone(&tx2));
+
+        assert!(pool_internal_tx2.cost() > pool_internal_tx1.cost());
+    }
+
+    #[tokio::test]
+    async fn test_add_transaction() {
+        let mut pool = create_test_pool();
+
+        let (tx, _, _) = create_default_tx_envelope_and_sender().await;
+        let on_chain_balance = U256::from(1_000_000);
+        let on_chain_nonce = 0;
+
+        let result = pool.add_transaction(tx.clone(), on_chain_balance, on_chain_nonce);
+
+        let tx_arc = Arc::new(tx.clone());
+
+        println!("result: {:?}", result);
+
+        assert!(result.is_ok());
+        if let Ok(AddedTransaction::Pending(added_tx)) = result {
+            assert_eq!(added_tx.transaction.clone(), tx_arc.clone());
+            assert!(added_tx.promoted.is_empty());
+            assert!(added_tx.discarded.is_empty());
+            assert!(added_tx.replaced.is_none());
+        } else {
+            panic!("Expected Pending transaction");
+        }
+
+        assert!(pool.all_transactions.contains(tx.tx_hash()));
+        assert!(pool.pending_transactions.contains(&TransactionId::from(tx_arc.clone())));
+        assert!(!pool.queued_transactions.contains(&TransactionId::from(tx_arc.clone())));
+    }
+
+    #[tokio::test]
+    async fn test_add_transaction_to_promote_descendants_to_pending() {
+        // Create a pool
+        let mut pool = create_test_pool();
+        let (sender, private_key) = create_sender();
+        let on_chain_balance = U256::from(1_000_000_000);
+        let on_chain_nonce = 0;
+
+        // Create and add three transactions with consecutive nonces starting from on_chain_nonce + 1
+        let mut tx_ids = vec![];
+        for i in 1..=3 {
+            let tx = create_tx_envelope_with_sender(
+                private_key.clone(),
+                sender,
+                20,
+                10,
+                100_000,
+                U256::ZERO,
+                on_chain_nonce + i
+            ).await;
+            let result = pool.add_transaction(tx.clone(), on_chain_balance, on_chain_nonce);
+            assert!(result.is_ok());
+            tx_ids.push(TransactionId::from(Arc::new(tx.clone())));
+        }
+
+        // Verify that all transaction are in queued, because the nonces start from on_chain_nonce + 1
+        assert!(pool.queued_transactions.contains(&tx_ids[0]));
+        assert!(pool.queued_transactions.contains(&tx_ids[1]));
+        assert!(pool.queued_transactions.contains(&tx_ids[2]));
+
+        // Create a new transaction with nonce equal to on_chain_nonce
+        let new_tx = create_tx_envelope_with_sender(
+            private_key,
+            sender,
+            30, // Higher fee to replace the existing transaction
+            15,
+            100_000,
+            U256::ZERO,
+            on_chain_nonce
+        ).await;
+
+        // Add the new transaction
+        let result = pool.add_transaction(new_tx.clone(), on_chain_balance, on_chain_nonce);
+        assert!(result.is_ok());
+
+        // Adding the transaction should move it to pending and promote the other transactions to pending
+        if let Ok(AddedTransaction::Pending(added_tx)) = result {
+            // Check that the new transaction replaced the old one
+            assert!(added_tx.replaced.is_none());
+            
+            // Check that the other transactions were promoted
+            assert_eq!(added_tx.promoted.len(), 3);
+            
+            // Verify final state of the pool
+            assert!(pool.pending_transactions.contains(&tx_ids[0]));
+            assert!(pool.pending_transactions.contains(&tx_ids[1]));
+            assert!(pool.pending_transactions.contains(&tx_ids[2]));
+
+            // Verify that the added transaction is in the pending pool
+            assert!(pool.pending_transactions.contains(&TransactionId::from(Arc::new(new_tx.clone()))));
+
+            // Verify that the new transaction is in the pool
+            assert!(pool.contains(new_tx.tx_hash()));
+        } else {
+            panic!("Expected Pending transaction");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_add_transaction_already_imported() {
+        let mut pool = create_test_pool();
+
+        let (tx, sender, _) = create_default_tx_envelope_and_sender().await;
+        let on_chain_balance = U256::from(1_000_000);
+        let on_chain_nonce = 0;
+
+        // Add transaction for the first time
+        let result = pool.add_transaction(tx.clone(), on_chain_balance, on_chain_nonce);
+        assert!(result.is_ok());
+
+        // Try to add the same transaction again
+        let result = pool.add_transaction(tx.clone(), on_chain_balance, on_chain_nonce);
+
+        assert!(result.is_err());
+        if let Err(error) = result {
+            assert_eq!(error.kind, PoolErrorKind::AlreadyImported);
+        }
+
+        // Verify that the transaction is in the pool only once
+        assert_eq!(pool.all_transactions.tx_counter.get(&sender).unwrap_or(&0), &1usize);
+        assert!(pool.contains(tx.tx_hash()));
+    }
+
+    #[tokio::test]
+    async fn test_add_transaction_with_low_nonce() {
+        let mut pool = create_test_pool();
+
+        let (tx, _, _) = create_default_tx_envelope_and_sender().await;
+        let on_chain_balance = U256::from(1_000_000);
+        let on_chain_nonce = 5; // Set on-chain nonce higher than the transaction's nonce
+
+        // Attempt to add transaction with a nonce lower than on-chain nonce
+        let result = pool.add_transaction(tx.clone(), on_chain_balance, on_chain_nonce);
+
+        assert!(result.is_err());
+        if let Err(error) = result {
+            assert_eq!(error.kind, PoolErrorKind::InvalidTxNonce(on_chain_nonce, 0));
+        }
+
+        // Verify that the transaction is not in the pool
+        let tx_arc = Arc::new(tx.clone());
+        assert!(!pool.contains(tx.tx_hash()));
+        assert!(pool.all_transactions.tx_counter.is_empty());
+        assert!(!pool.pending_transactions.contains(&TransactionId::from(tx_arc.clone())));
+        assert!(!pool.queued_transactions.contains(&TransactionId::from(tx_arc.clone())));
+    }
+
+    #[tokio::test]
+    async fn test_add_transaction_replacement_underpriced() {
+        let mut pool = create_test_pool();
+
+        let (tx1, sender, private_key) = create_default_tx_envelope_and_sender().await;
+        let on_chain_balance = U256::from(1_000_000);
+        let on_chain_nonce = 0;
+
+        // Add the first transaction
+        let result = pool.add_transaction(tx1.clone(), on_chain_balance, on_chain_nonce);
+        assert!(result.is_ok());
+
+        // Create a replacement transaction with the same nonce but lower gas price
+        let tx2 = create_tx_envelope_with_sender(private_key, sender, 5, 5, 100000, U256::ZERO, 0).await;
+
+        // Try to add the replacement transaction
+        let result = pool.add_transaction(tx2.clone(), on_chain_balance, on_chain_nonce);
+
+        assert!(result.is_err());
+        if let Err(error) = result {
+            assert!(matches!(error.kind, PoolErrorKind::ReplacementUnderpriced(_)));
+            if let PoolErrorKind::ReplacementUnderpriced(existing_tx_hash) = error.kind {
+                assert_eq!(existing_tx_hash, *tx1.tx_hash());
+            }
+        }
+
+        // Verify that the original transaction is still in the pool
+        assert!(pool.contains(tx1.tx_hash()));
+        assert!(!pool.contains(tx2.tx_hash()));
+        assert_eq!(pool.all_transactions.tx_counter.get(&sender).unwrap_or(&0), &1usize);
+    }
+
+    #[tokio::test]
+    async fn test_add_transaction_fee_cap_below_minimum_protocol_fee_cap() {
+        let mut pool = create_test_pool();
+        let (sender, private_key) = create_sender();
+
+        // Create a transaction with fee cap below the minimum protocol fee cap
+        let tx = create_tx_envelope_with_sender(
+            private_key, 
+            sender, 
+            4, // max_fee_per_gas set below minimal_protocol_basefee (5)
+            4, // max_priority_fee_per_gas
+            100000, 
+            U256::ZERO, 
+            0
+        ).await;
+
+        let on_chain_balance = U256::from(1_000_000);
+        let on_chain_nonce = 0;
+
+        // Attempt to add the transaction
+        let result = pool.add_transaction(tx.clone(), on_chain_balance, on_chain_nonce);
+
+        // Assert that the result is an error
+        assert!(result.is_err());
+        if let Err(error) = result {
+            assert!(matches!(error.kind, PoolErrorKind::FeeCapBelowMinimumProtocolFeeCap(4)));
+        }
+
+        // Verify that the transaction is not in the pool
+        assert!(!pool.contains(tx.tx_hash()));
+        assert!(pool.all_transactions.tx_counter.is_empty());
+        assert!(!pool.pending_transactions.contains(&TransactionId::from(Arc::new(tx.clone()))));
+        assert!(!pool.queued_transactions.contains(&TransactionId::from(Arc::new(tx.clone()))));
+    }
+
+    #[tokio::test]
+    async fn test_add_transaction_spammer_exceeded_capacity() {
+        let mut pool = create_test_pool();
+        let (sender, private_key) = create_sender();
+        let on_chain_balance = U256::from(1_000_000_000); // Large balance to avoid insufficient funds
+        let on_chain_nonce = 0;
+
+        // Add transactions up to the max_account_slots limit
+        for i in 0..pool.config.max_account_slots {
+            let tx = create_tx_envelope_with_sender(
+                private_key.clone(),
+                sender,
+                20, // max_fee_per_gas
+                10, // max_priority_fee_per_gas
+                100000,
+                U256::ZERO,
+                i as u64
+            ).await;
+
+            let result = pool.add_transaction(tx, on_chain_balance, on_chain_nonce);
+            assert!(result.is_ok());
+        }
+
+        // Attempt to add one more transaction, which should exceed the capacity
+        let excess_tx = create_tx_envelope_with_sender(
+            private_key,
+            sender,
+            20,
+            10,
+            100000,
+            U256::ZERO,
+            pool.config.max_account_slots as u64
+        ).await;
+
+        let result = pool.add_transaction(excess_tx.clone(), on_chain_balance, on_chain_nonce);
+
+        // Assert that the result is an error
+        assert!(result.is_err());
+        if let Err(error) = result {
+            assert!(matches!(error.kind, PoolErrorKind::SpammerExceededCapacity(addr) if addr == sender));
+        }
+
+        // Verify that the excess transaction is not in the pool
+        assert!(!pool.contains(excess_tx.tx_hash()));
+        assert_eq!(pool.all_transactions.tx_counter.get(&sender).unwrap_or(&0), &pool.config.max_account_slots);
+    }
+
+    #[tokio::test]
+    async fn test_add_transaction_gas_limit_exceeds_block_gas() {
+        let mut pool = create_test_pool();
+        let (sender, private_key) = create_sender();
+        let on_chain_balance = U256::from(1_000_000_000); // Large balance to avoid insufficient funds
+        let on_chain_nonce = 0;
+
+        // Create a transaction with gas limit higher than the block gas limit
+        let tx = create_tx_envelope_with_sender(
+            private_key,
+            sender,
+            20, // max_fee_per_gas
+            10, // max_priority_fee_per_gas
+            pool.config.block_gas_limit + 1, // Exceeds block gas limit
+            U256::ZERO,
+            on_chain_nonce
+        ).await;
+
+        let result = pool.add_transaction(tx.clone(), on_chain_balance, on_chain_nonce);
+
+        // Assert that the result is an error
+        assert!(result.is_err());
+        if let Err(error) = result {
+            assert!(matches!(
+                error.kind,
+                PoolErrorKind::TxGasLimitMoreThanAvailableBlockGas(block_gas, tx_gas)
+                if block_gas == pool.config.block_gas_limit && tx_gas == pool.config.block_gas_limit + 1
+            ));
+        }
+
+        // Verify that the transaction is not in the pool
+        assert!(!pool.contains(tx.tx_hash()));
+        assert_eq!(pool.all_transactions.tx_counter.get(&sender).unwrap_or(&0), &0);
+    }
+
+    #[tokio::test]
+    async fn test_ensure_valid_success() {
+        let mut pool = create_test_pool();
+        let (sender, private_key) = create_sender();
+        let on_chain_balance = U256::from(1_000_000_000);
+        let on_chain_nonce = 0;
+
+        let tx = create_tx_envelope_with_sender(
+            private_key,
+            sender,
+            20,
+            10,
+            100_000,
+            U256::ZERO,
+            on_chain_nonce
+        ).await;
+
+        let result = pool.ensure_valid(Arc::new(tx), 100_000, &sender, on_chain_nonce, on_chain_nonce);
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_ensure_valid_exceeded_sender_transactions_capacity() {
+        let mut pool = create_test_pool();
+        let (sender, private_key) = create_sender();
+        let on_chain_balance = U256::from(1_000_000_000);
+        let on_chain_nonce = 0;
+
+        // Fill up the pool to max capacity
+        for i in 0..pool.config.max_account_slots {
+            let tx = create_tx_envelope_with_sender(
+                private_key.clone(),
+                sender,
+                20,
+                10,
+                100_000,
+                U256::ZERO,
+                on_chain_nonce + i as u64
+            ).await;
+            pool.all_transactions.tx_inc(sender);
+        }
+
+        // Try to add one more transaction
+        let excess_tx = create_tx_envelope_with_sender(
+            private_key.clone(),
+            sender,
+            20,
+            10,
+            100_000,
+            U256::ZERO,
+            on_chain_nonce + pool.config.max_account_slots as u64
+        ).await;
+
+        let result = pool.ensure_valid(Arc::new(excess_tx), 100_000, &sender, on_chain_nonce, on_chain_nonce + pool.config.max_account_slots as u64);
+        assert!(matches!(result, Err(InsertErr::ExceededSenderTransactionsCapacity { address }) if address == sender));
+    }
+
+    #[tokio::test]
+    async fn test_ensure_valid_tx_gas_limit_more_than_available_block_gas() {
+        let mut pool = create_test_pool();
+        let (sender, private_key) = create_sender();
+        let on_chain_balance = U256::from(1_000_000_000);
+        let on_chain_nonce = 0;
+
+        let tx = create_tx_envelope_with_sender(
+            private_key,
+            sender,
+            20,
+            10,
+            pool.config.block_gas_limit + 1,
+            U256::ZERO,
+            on_chain_nonce
+        ).await;
+
+        let result = pool.ensure_valid(Arc::new(tx), pool.config.block_gas_limit + 1, &sender, on_chain_nonce, on_chain_nonce);
+        assert!(matches!(result, Err(InsertErr::TxGasLimitMoreThanAvailableBlockGas { block_gas_limit, tx_gas_limit })
+            if block_gas_limit == pool.config.block_gas_limit && tx_gas_limit == pool.config.block_gas_limit + 1));
+    }
+
+    #[tokio::test]
+    async fn test_ensure_valid_invalid_tx_nonce() {
+        let mut pool = create_test_pool();
+        let (sender, private_key) = create_sender();
+        let on_chain_balance = U256::from(1_000_000_000);
+        let on_chain_nonce = 5;
+
+        let tx = create_tx_envelope_with_sender(
+            private_key,
+            sender,
+            20,
+            10,
+            100_000,
+            U256::ZERO,
+            on_chain_nonce - 1
+        ).await;
+
+        let result = pool.ensure_valid(Arc::new(tx), 100_000, &sender, on_chain_nonce, on_chain_nonce - 1);
+        assert!(matches!(result, Err(InsertErr::InvalidTxNonce { on_chain_nonce: chain_nonce, tx_nonce })
+            if chain_nonce == on_chain_nonce && tx_nonce == on_chain_nonce - 1));
+    }
+
+    #[test]
+    fn test_is_underpriced() {
+        // Test case where the replacement transaction is underpriced
+        assert!(Pool::<CoinbaseTipOrdering<TxEnvelope>>::is_underpriced(100, 99));
+        assert!(Pool::<CoinbaseTipOrdering<TxEnvelope>>::is_underpriced(1000, 999));
+
+        // Test case where the replacement transaction is not underpriced (equal price)
+        assert!(!Pool::<CoinbaseTipOrdering<TxEnvelope>>::is_underpriced(100, 100));
+
+        // Test case where the replacement transaction is not underpriced (higher price)
+        assert!(!Pool::<CoinbaseTipOrdering<TxEnvelope>>::is_underpriced(100, 101));
+        assert!(!Pool::<CoinbaseTipOrdering<TxEnvelope>>::is_underpriced(1000, 1001));
+ 
+        // Test edge cases
+        assert!(Pool::<CoinbaseTipOrdering<TxEnvelope>>::is_underpriced(1, 0));
+        assert!(!Pool::<CoinbaseTipOrdering<TxEnvelope>>::is_underpriced(0, 0));
+        assert!(!Pool::<CoinbaseTipOrdering<TxEnvelope>>::is_underpriced(0, 1));
+
+        // Test with maximum u128 values
+        assert!(!Pool::<CoinbaseTipOrdering<TxEnvelope>>::is_underpriced(u128::MAX - 1, u128::MAX));
+        assert!(Pool::<CoinbaseTipOrdering<TxEnvelope>>::is_underpriced(u128::MAX, u128::MAX - 1));
+    }
+}
+
