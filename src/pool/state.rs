@@ -1,5 +1,12 @@
+//! Transaction state and pool management.
+//!
+//! This module defines the `TxState` struct, which represents the current state of a transaction
+//! in the pool. It uses bitflags to efficiently store and manage various transaction properties
+//! that determine which sub-pool a transaction belongs to.
+//!
+//! The module also provides implementations and associated functions for `TxState` to facilitate
+//! transaction state management and sub-pool assignment.
 
-// -----state.rs-----
 
 bitflags::bitflags! {
     /// Marker to represents the current state of a transaction in the pool and from which the corresponding sub-pool is derived, depending on what bits are set.

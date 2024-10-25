@@ -1,5 +1,16 @@
+//! Transaction ordering and prioritization for the transaction pool.
+//!
+//! This module provides traits and implementations for ordering transactions
+//! in the pool based on various criteria. It includes:
+//!
+//! - The `TransactionOrdering` trait for defining custom ordering strategies.
+//! - The `Priority` enum for representing transaction priorities.
+//! - The `CoinbaseTipOrdering` struct, which implements an ordering strategy
+//!   based on the transaction's priority fee.
+//!
+//! These components allow for flexible and customizable transaction ordering
+//! within the pool, enabling efficient management of pending transactions.
 
-// -----ordering.rs-----
 
 use std::{fmt, marker::PhantomData};
 
@@ -8,6 +19,7 @@ use alloy::{
     primitives::U256
 };
 
+/// A trait for ordering transactions in the pool.
 pub trait TransactionOrdering: Send + Sync + 'static {
     
     type PriorityValue: Ord + Clone + Default + fmt::Debug + Send + Sync;
@@ -20,6 +32,7 @@ pub trait TransactionOrdering: Send + Sync + 'static {
     ) -> Priority<Self::PriorityValue>;
 }
 
+/// A priority value for a transaction.
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Debug)]
 pub enum Priority<T: Ord + Clone> {
     Value(T),
@@ -33,6 +46,7 @@ impl<T: Ord + Clone> From<Option<T>> for Priority<T> {
     }
 }
 
+/// An ordering strategy that prioritizes transactions based on their priority fee.
 #[derive(Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[non_exhaustive]
 pub struct CoinbaseTipOrdering<T>(PhantomData<T>);

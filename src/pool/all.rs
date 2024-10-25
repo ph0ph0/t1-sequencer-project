@@ -1,4 +1,15 @@
-// -----all_transactions.rs----
+//! This module contains the `AllTransactions` struct and its implementation.
+//!
+//! The `AllTransactions` struct is responsible for managing all transactions
+//! in the pool. It provides functionality to store and manage
+//! transactions efficiently using various data structures.
+//!
+//! Key features:
+//! - Stores transactions grouped by sender and ordered by nonce
+//! - Maintains a hash-based lookup for quick transaction retrieval
+//! - Keeps track of the number of transactions per sender
+//! - Provides methods for adding, removing, and querying transactions
+
 
 use std::{
     collections::{BTreeMap, HashMap, hash_map},

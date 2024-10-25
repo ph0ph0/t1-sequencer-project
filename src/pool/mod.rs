@@ -1,3 +1,20 @@
+//! Transaction pool management module.
+//!
+//! This module contains the core components and functionality for managing a transaction pool.
+//! It includes submodules for handling different aspects of the pool, such as pending transactions,
+//! queued transactions, and overall pool state management.
+//!
+//! The main components of this module are:
+//!
+//! - `Pool`: The central struct that manages the entire transaction pool.
+//! - `PoolConfig`: Configuration parameters for the transaction pool.
+//! - Various submodules (`all`, `pending`, `queued`, `state`, `sequence`) that handle specific
+//!   aspects of pool management.
+//!
+//! This module provides functionality for adding transactions to the pool 
+//! and retrieving them in an optimal order for block inclusion.
+
+
 pub mod all;
 pub mod pending;
 pub mod queued;
@@ -29,6 +46,23 @@ use crate::{
     },
 };
 
+/// Configuration parameters for the transaction pool.
+///
+/// This struct defines various limits and settings that control the behavior of the transaction pool.
+///
+/// # Fields
+///
+/// * `max_account_slots`: The maximum number of transactions a single account can have in the pool.
+///   This helps prevent spam and ensures fair access to the pool for all users.
+///
+/// * `block_gas_limit`: The maximum amount of gas that can be used in a single block. This is used
+///   to limit the selection of transactions for inclusion in a block.
+///
+/// * `minimal_protocol_basefee`: The minimum base fee required by the protocol. Transactions with
+///   a lower base fee than this will never be included in the chain.
+///
+/// * `pending_base_fee`: The expected base fee for the pending block. This is used in calculations
+///   related to transaction prioritization and fee estimation.
 
 #[derive(Debug, Clone)]
 pub struct PoolConfig {
@@ -44,6 +78,26 @@ pub struct PoolConfig {
     pub pending_base_fee: u64
 }
 
+/// A transaction pool that manages and orders transactions for inclusion in blocks.
+///
+/// The `Pool` struct is the central component of the transaction sequencing system. It manages
+/// the lifecycle and organization of transactions, separating them into pending and queued pools.
+/// The pool is generic over a transaction ordering type `O`, allowing for flexible prioritization
+/// strategies.
+///
+/// # Type Parameters
+///
+/// * `O`: A type implementing `TransactionOrdering`, which defines how transactions are prioritized.
+///
+/// # Fields
+///
+/// * `config`: Configuration parameters for the pool.
+/// * `all_transactions`: A collection of all validated transactions in the pool.
+/// * `pending_transactions`: Manages transactions that are ready for inclusion in a block.
+/// * `queued_transactions`: Holds transactions that are waiting for their prerequisites to be met.
+///
+/// This structure provides methods for adding transactions and retrieving optimal transaction
+/// sequences.
 #[derive(Debug, Clone)]
 pub struct Pool<O>
 where
@@ -264,59 +318,77 @@ where
     /// # Example
     ///
     /// ```
-    /// use t1_sequencer_project::{Pool, PoolConfig, CoinbaseTipOrdering};
-    /// use alloy::consensus::TxEnvelope;
-    /// use alloy::network::{Ethereum, EthereumWallet, NetworkWallet};
-    /// use alloy::rpc::types::TransactionRequest;
-    /// use alloy::signers::{
-    ///     k256::Secp256k1,
-    ///     local::LocalSigner,
-    ///     utils::secret_key_to_address,
+    /// use alloy::{
+    ///     consensus::TxEnvelope,
+    ///     network::{Ethereum, EthereumWallet, NetworkWallet},
+    ///     primitives::{Address, U256, TxKind},
+    ///     rpc::types::TransactionRequest,
+    ///     signers::{
+    ///         k256::Secp256k1,
+    ///         local::LocalSigner,
+    ///         utils::secret_key_to_address,
+    ///     },
     /// };
-    /// use alloy::primitives::{Address, U256, TxKind};
-    /// 
     /// use ecdsa::SigningKey;
     /// use rand_core::OsRng;
     /// 
+    /// use t1_sequencer_project::{Pool, PoolConfig, CoinbaseTipOrdering};
+    /// 
     /// #[tokio::main]
-/// async fn main() {
-///     let config = PoolConfig {
-///         max_account_slots: 16,
-///         block_gas_limit: 30_000_000,
-///         minimal_protocol_basefee: 1,
-///         pending_base_fee: 1,
-///     };
-///     let ordering: CoinbaseTipOrdering<TxEnvelope> = CoinbaseTipOrdering::default();
-///     let mut pool = Pool::new(config, ordering);
-///     let private_key = SigningKey::random(&mut OsRng);
-///     let sender = secret_key_to_address(&private_key);
-///
-///     let req = TransactionRequest {
-///         from: None,
-///         to: Some(TxKind::Call(Address::random())),
-///         max_fee_per_gas: Some(20),
-///         max_priority_fee_per_gas: Some(10),
-///         gas: Some(100_000),
-///         value: Some(U256::from(1)),
-///         nonce: Some(0),
-///         chain_id: Some(1),
-///         ..Default::default()
-///     };
-///
-///     let typed_tx = req.build_typed_tx().expect("Failed to build typed tx");
-///     let local_signer: LocalSigner<SigningKey<Secp256k1>> = LocalSigner::from_signing_key(private_key);
-///     let wallet = EthereumWallet::new(local_signer);
-///
-///     let tx_env = <EthereumWallet as NetworkWallet<Ethereum>>::sign_transaction_from(&wallet, sender, typed_tx).await.unwrap();
-///     let on_chain_balance = U256::from(1_000_000_000);
-///     let on_chain_nonce = 0;
-///
-///     let result = pool.add_transaction(tx_env, on_chain_balance, on_chain_nonce);
-///
-///     let mut sequence = pool.transaction_sequence();
-///     let tx = sequence.next().unwrap();
-/// }
-/// ```
+    /// async fn main() {
+    ///     // Create the pool config
+    ///     let config = PoolConfig {
+    ///         max_account_slots: 16,
+    ///         block_gas_limit: 30_000_000,
+    ///         minimal_protocol_basefee: 1,
+    ///         pending_base_fee: 1,
+    ///     };
+    ///     
+    ///     // Create the ordering strategy
+    ///     let ordering: CoinbaseTipOrdering<TxEnvelope> = CoinbaseTipOrdering::default();
+    /// 
+    ///     // Create the pool
+    ///     let mut pool = Pool::new(config, ordering);
+    /// 
+    ///     // Create the sender
+    ///     let private_key = SigningKey::random(&mut OsRng);
+    ///     let sender = secret_key_to_address(&private_key);
+    ///
+    ///     // Create the transaction request
+    ///     let req = TransactionRequest {
+    ///         from: None,
+    ///         to: Some(TxKind::Call(Address::random())),
+    ///         max_fee_per_gas: Some(20),
+    ///         max_priority_fee_per_gas: Some(10),
+    ///         gas: Some(100_000),
+    ///         value: Some(U256::from(1)),
+    ///         nonce: Some(0),
+    ///         chain_id: Some(1),
+    ///         ..Default::default()
+    ///     };
+    /// 
+    ///     // Build the typed transaction
+    ///     let typed_tx = req.build_typed_tx().expect("Failed to build typed tx");
+    ///
+    ///     // Create the local signer
+    ///     let local_signer: LocalSigner<SigningKey<Secp256k1>> = LocalSigner::from_signing_key(private_key);
+    ///     let wallet = EthereumWallet::new(local_signer);
+    ///
+    ///     // Sign the transaction
+    ///     let tx_env = <EthereumWallet as NetworkWallet<Ethereum>>::sign_transaction_from(&wallet, sender, typed_tx).await.unwrap();
+    /// 
+    ///     // Create the on-chain balance and nonce
+    ///     let on_chain_balance = U256::from(1_000_000_000);
+    ///     let on_chain_nonce = 0;
+    ///
+    ///     // Add the transaction to the pool
+    ///     let result = pool.add_transaction(tx_env, on_chain_balance, on_chain_nonce);
+    ///
+    ///     // Get the transaction sequence
+    ///     let mut sequence = pool.transaction_sequence();
+    ///     let tx = sequence.next().unwrap();
+    /// }
+    /// ```
     pub fn transaction_sequence(&self) -> TransactionSequence<O> {
         self.pending_transactions.transaction_sequence()
     }

@@ -1,5 +1,16 @@
+//! Queued transaction pool implementation.
+//!
+//! This module contains the implementation of a queued transaction pool,
+//! which manages transactions in a priority queue based on their gas price
+//! and submission order.
+//!
+//! The main structures in this module are:
+//! - `QueuedPoolTransaction`: Represents a transaction in the pool with its submission order.
+//! - `QueuedOrderedTransaction`: Represents an ordered transaction (implementation not shown in this snippet).
+//!
+//! The module also provides implementations for various traits like `Ord`, `PartialOrd`, `Eq`, and
+//! `PartialEq` to enable efficient sorting and comparison.
 
-// -----queued.rs-----
 
 use std::{
     cmp::Ordering,

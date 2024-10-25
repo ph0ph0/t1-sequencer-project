@@ -1,3 +1,10 @@
+//! Test utility helpers for transaction and sender creation.
+//!
+//! This module provides functions to create test senders and transactions
+//! for use in testing environments. It includes utilities for generating
+//! random Ethereum addresses, signing keys, and creating transaction envelopes.
+
+
 use std::sync::Arc;
 
 use alloy::{

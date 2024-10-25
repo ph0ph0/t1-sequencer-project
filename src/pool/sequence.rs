@@ -1,4 +1,18 @@
-// -----sequence.rs-----
+//! Transaction sequence management for the transaction pool.
+//!
+//! This module provides the `TransactionSequence` struct, which is responsible for
+//! managing and ordering transactions within the pool. It handles the sequencing
+//! of transactions, tracking their dependencies, and managing their execution order.
+//!
+//! The `TransactionSequence` struct maintains three main collections:
+//! - `all`: A map of all transactions in the pool.
+//! - `independent`: A set of transactions that can be executed immediately.
+//! - `invalid`: A set of transaction hashes that have been marked as invalid.
+//!
+//! This module is crucial for maintaining the integrity and efficiency of the
+//! transaction pool, ensuring that transactions are processed in the correct order
+//! and that invalid transactions are properly handled.
+
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;

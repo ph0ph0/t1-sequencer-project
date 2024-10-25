@@ -1,3 +1,5 @@
+#![doc = include_str!("../README.md")]
+
 pub use pool::{Pool, PoolConfig};
 pub use ordering::{TransactionOrdering, CoinbaseTipOrdering};
 

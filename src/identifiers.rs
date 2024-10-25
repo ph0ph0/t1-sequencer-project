@@ -1,5 +1,13 @@
+//! Transaction identification and related utilities.
+//!
+//! This module provides structures and methods for uniquely identifying transactions
+//! within the pool. It includes the `TransactionId` struct, which combines a sender's
+//! address with a transaction nonce to create a unique identifier.
+//!
+//! The module also offers utility functions for working with transaction identifiers,
+//! such as finding ancestor and descendant transactions, which is crucial for
+//! maintaining proper transaction ordering and dependency management in the pool.
 
-// -----identifiers.rs-----
 
 use std::sync::Arc;
 
@@ -55,6 +63,7 @@ impl From<Arc<TxEnvelope>> for TransactionId {
     }
 }
 
+/// The number of transactions a user has submitted (count) and the last submission id (an interal id assigned to each transaction)
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SenderTransactionCount {
     pub count: u64,

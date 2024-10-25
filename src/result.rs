@@ -1,5 +1,9 @@
+//! Result types for transaction pool operations.
+//!
+//! This module contains various result types and enums used to represent
+//! the outcomes of operations on the transaction pool, such as adding
+//! transactions or updating the pool state.
 
-// -----result.rs-----
 
 use alloy::{
     consensus::TxEnvelope,

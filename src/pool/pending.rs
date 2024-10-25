@@ -1,5 +1,9 @@
-
-// -----pending.rs-----
+//! Pending transaction management for the transaction pool.
+//!
+//! This module contains structures and implementations for handling pending transactions
+//! within the transaction pool. It provides functionality for creating, storing, and
+//! managing transactions that are waiting to be included in a block.
+//!
 
 use std::{
     cmp::Ordering,
