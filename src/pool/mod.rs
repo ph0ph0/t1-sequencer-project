@@ -62,12 +62,94 @@ impl<O> Pool<O>
 where
     O: TransactionOrdering,
 {
+    
+    /// Creates a new `Pool` instance with the given configuration and ordering strategy.
+    ///
+    /// This function initializes a new transaction pool with the specified configuration and
+    /// transaction ordering mechanism. The pool is responsible for managing incoming transactions,
+    /// organizing them into appropriate sub-pools (pending and queued), and providing an efficient
+    /// way to retrieve transactions for block production.
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - A `PoolConfig` struct containing the configuration parameters for the pool,
+    ///   such as maximum account slots, block gas limit, and base fee settings.
+    /// * `ordering` - An instance of a type implementing the `TransactionOrdering` trait, which
+    ///   defines how transactions should be prioritized within the pool.
+    ///
+    /// # Returns
+    ///
+    /// Returns a new `Pool<O>` instance, where `O` is the type implementing `TransactionOrdering`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use t1_sequencer_project::{Pool, PoolConfig, CoinbaseTipOrdering};
+    /// use alloy::consensus::TxEnvelope;
+    /// 
+    /// let config = PoolConfig {
+    ///     max_account_slots: 16,
+    ///     block_gas_limit: 30_000_000,
+    ///     minimal_protocol_basefee: 1_000_000_000,
+    ///     pending_base_fee: 1_500_000_000,
+    /// };
+    /// let ordering: CoinbaseTipOrdering<TxEnvelope> = CoinbaseTipOrdering::default();
+    /// let pool = Pool::new(config, ordering);
+    /// ```
+    ///
+    /// # Note
+    ///
+    /// The choice of ordering strategy will impact the behavior of the
+    /// transaction pool. Ensure that the selected ordering mechanism aligns with the desired
+    /// prioritization logic for your implementation.
+    pub fn new(config: PoolConfig, ordering: O) -> Self {
+        Self {
+            config,
+            all_transactions: AllTransactions::default(),
+            pending_transactions: PendingPool::new(ordering),
+            queued_transactions: QueuedPool::default(),
+        }
+    }
+
+    
+    /// Adds a new transaction to the pool.
+    ///
+    /// This function attempts to add a new transaction to the pool, performing various checks
+    /// and updates in the process. It handles the following steps:
+    ///
+    /// 1. Checks if the transaction already exists in the pool.
+    /// 2. Validatesthe transaction, considering on-chain balance and nonce.
+    /// 3. If successful, updates the pool state, including potential replacements and promotions.
+    /// 4. Handles various error conditions that may occur during the insertion process.
+    ///
+    /// # Arguments
+    ///
+    /// * `tx` - The transaction to be added, Alloy `TxEnvelope`.
+    /// * `on_chain_balance` - The current on-chain balance of the sender's account.
+    /// * `on_chain_nonce` - The current on-chain nonce of the sender's account.
+    ///
+    /// # Returns
+    ///
+    /// Returns a `PoolResult<AddedTransaction>`, which is:
+    /// - `Ok(AddedTransaction)` if the transaction was successfully added. This includes
+    ///   information about whether the transaction was added to the pending or queued pool,
+    ///   any transactions that were promoted or discarded as a result, and any transaction
+    ///   that was replaced.
+    /// - `Err(PoolError)` if the transaction could not be added, with details about the error.
+    ///
+    /// # Errors
+    ///
+    /// This function can return errors for various reasons, including:
+    /// - The transaction already exists in the pool.
+    /// - The transaction type is unknown.
+    /// - The transaction nonce is invalid.
+    /// - There's an issue with the transaction signature.
     pub fn add_transaction(
         &mut self,
         tx: TxEnvelope,
         on_chain_balance: U256,
         on_chain_nonce: u64
-    ) -> PoolResult<AddedTransaction>{
+    ) -> PoolResult<AddedTransaction> {
 
         let tx_hash = tx.tx_hash().clone();
         // Check to see if the new tx already exists in the pool
@@ -153,6 +235,90 @@ where
                 }
             }
         }
+    }
+
+     /// Returns an iterator over the sequence of transactions in the pending pool.
+    ///
+    /// This method provides access to an ordered sequence of transactions that are ready to be
+    /// executed against the current chain state. The returned iterator yields transactions in
+    /// the order determined by the pool's transaction ordering strategy.
+    ///
+    /// # Returns
+    ///
+    /// Returns a `TransactionSequence<O>` iterator, where `O` is the transaction ordering type
+    /// used by this pool. This iterator will yield `Arc<TxEnvelope>` items representing the
+    /// transactions.
+    ///
+    /// # Characteristics
+    ///
+    /// - The returned transactions are guaranteed to be in the pending pool, meaning they are
+    ///   ready for immediate execution.
+    /// - The order of transactions respects nonce ordering for each sender address.
+    /// - The overall sequence is ordered according to the pool's `TransactionOrdering` implementation.
+    ///
+    /// # Usage
+    ///
+    /// This method is particularly useful for block producers or simulators that need to retrieve
+    /// a sequence of transactions ready for inclusion in a block or for simulating state transitions.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use t1_sequencer_project::{Pool, PoolConfig, CoinbaseTipOrdering};
+    /// use alloy::consensus::TxEnvelope;
+    /// use alloy::network::{Ethereum, EthereumWallet, NetworkWallet};
+    /// use alloy::rpc::types::TransactionRequest;
+    /// use alloy::signers::{
+    ///     k256::Secp256k1,
+    ///     local::LocalSigner,
+    ///     utils::secret_key_to_address,
+    /// };
+    /// use alloy::primitives::{Address, U256, TxKind};
+    /// 
+    /// use ecdsa::SigningKey;
+    /// use rand_core::OsRng;
+    /// 
+    /// #[tokio::main]
+/// async fn main() {
+///     let config = PoolConfig {
+///         max_account_slots: 16,
+///         block_gas_limit: 30_000_000,
+///         minimal_protocol_basefee: 1,
+///         pending_base_fee: 1,
+///     };
+///     let ordering: CoinbaseTipOrdering<TxEnvelope> = CoinbaseTipOrdering::default();
+///     let mut pool = Pool::new(config, ordering);
+///     let private_key = SigningKey::random(&mut OsRng);
+///     let sender = secret_key_to_address(&private_key);
+///
+///     let req = TransactionRequest {
+///         from: None,
+///         to: Some(TxKind::Call(Address::random())),
+///         max_fee_per_gas: Some(20),
+///         max_priority_fee_per_gas: Some(10),
+///         gas: Some(100_000),
+///         value: Some(U256::from(1)),
+///         nonce: Some(0),
+///         chain_id: Some(1),
+///         ..Default::default()
+///     };
+///
+///     let typed_tx = req.build_typed_tx().expect("Failed to build typed tx");
+///     let local_signer: LocalSigner<SigningKey<Secp256k1>> = LocalSigner::from_signing_key(private_key);
+///     let wallet = EthereumWallet::new(local_signer);
+///
+///     let tx_env = <EthereumWallet as NetworkWallet<Ethereum>>::sign_transaction_from(&wallet, sender, typed_tx).await.unwrap();
+///     let on_chain_balance = U256::from(1_000_000_000);
+///     let on_chain_nonce = 0;
+///
+///     let result = pool.add_transaction(tx_env, on_chain_balance, on_chain_nonce);
+///
+///     let mut sequence = pool.transaction_sequence();
+///     let tx = sequence.next().unwrap();
+/// }
+/// ```
+    pub fn transaction_sequence(&self) -> TransactionSequence<O> {
+        self.pending_transactions.transaction_sequence()
     }
 
     /// Checks if the given tx_hash is present in the all_transactions pool
@@ -529,13 +695,7 @@ where
         let tx = self.remove_from_subpool(from, id)?;
         self.add_transaction_to_subpool(to, tx.clone());
         Some(tx)
-    }
-
-    /// Returns the transaction sequence iterator
-    pub fn transaction_sequence(&self) -> TransactionSequence<O> {
-        self.pending_transactions.transaction_sequence()
-    }
-    
+    }    
 }
 
 /// The internal transaction typed used by `Pool` which contains additional info used for
@@ -606,28 +766,10 @@ mod tests {
     }
 
     fn create_test_pool_with_config(config: PoolConfig) -> Pool<CoinbaseTipOrdering<TxEnvelope>> {
-        Pool::<CoinbaseTipOrdering<TxEnvelope>> {
-            config,
-            all_transactions: AllTransactions::default(),
-            pending_transactions: PendingPool::new(CoinbaseTipOrdering::default()),
-            queued_transactions: QueuedPool::default(),
-        }
+        let ordering: CoinbaseTipOrdering<TxEnvelope> = CoinbaseTipOrdering::default();
+
+        Pool::new(config, ordering)
     }
-
-
-    // let config = PoolConfig {
-    //         max_account_slots: 16,
-    //         block_gas_limit: 30_000_000,
-    //         minimal_protocol_basefee: 7,
-    //         pending_base_fee: 10,
-    //     };
-    //     let mut pool = Pool::<CoinbaseTipOrdering<TxEnvelope>> {
-    //         config,
-    //         all_transactions: AllTransactions::default(),
-    //         pending_transactions: PendingPool::new(CoinbaseTipOrdering::default()),
-    //         transaction_sequence: TransactionSequence::new(CoinbaseTipOrdering::default()),
-    //         queued_transactions: QueuedPool::default(),
-    //     };
 
     #[tokio::test]
     async fn test_pool_internal_transaction_cumulative_cost() {
