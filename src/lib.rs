@@ -1,10 +1,8 @@
+pub use pool::{Pool, PoolConfig};
+pub use ordering::{TransactionOrdering, CoinbaseTipOrdering};
+
 pub mod pool;
 pub mod identifiers;
 pub mod ordering;
 pub mod result;
-pub mod test_utils;
-
-
-
-
-
+mod test_utils;
