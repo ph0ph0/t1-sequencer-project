@@ -12,7 +12,7 @@ use std::{
 };
 
 use alloy::{
-    consensus::{TxEnvelope, Transaction},
+    consensus::{Transaction, TxEnvelope},
     primitives::Address,
 };
 
@@ -25,7 +25,7 @@ use crate::{
 pub struct PendingTransaction<O>
 where
     O: TransactionOrdering,
-{   
+{
     /// The id of the submission that added this transaction to the pool
     submission_id: u64,
     /// The transaction
@@ -33,7 +33,7 @@ where
     /// The priority of the transaction, used for ordering
     priority: Priority<O::PriorityValue>,
     /// The sender of the transaction
-    sender: Address
+    sender: Address,
 }
 
 impl<O> PendingTransaction<O>
@@ -76,20 +76,20 @@ where
     }
 }
 
-
-impl<O> Ord for PendingTransaction<O> 
+impl<O> Ord for PendingTransaction<O>
 where
     O: TransactionOrdering,
 {
     fn cmp(&self, other: &Self) -> Ordering {
         // Primary sort by priority fee (ascending, best txs are at the end)
-        self.priority.cmp(&other.priority)
+        self.priority
+            .cmp(&other.priority)
             // Secondary sort by address
             .then(self.sender.cmp(&other.sender))
     }
 }
 
-impl<O> PartialOrd for PendingTransaction<O> 
+impl<O> PartialOrd for PendingTransaction<O>
 where
     O: TransactionOrdering,
 {
@@ -98,12 +98,9 @@ where
     }
 }
 
-impl<O> Eq for PendingTransaction<O> 
-where
-    O: TransactionOrdering,
-{}
+impl<O> Eq for PendingTransaction<O> where O: TransactionOrdering {}
 
-impl<O> PartialEq<Self> for PendingTransaction<O> 
+impl<O> PartialEq<Self> for PendingTransaction<O>
 where
     O: TransactionOrdering,
 {
@@ -112,7 +109,7 @@ where
     }
 }
 
-impl<O: TransactionOrdering> Clone for PendingTransaction<O> 
+impl<O: TransactionOrdering> Clone for PendingTransaction<O>
 where
     O: TransactionOrdering,
 {
@@ -121,7 +118,7 @@ where
             submission_id: self.submission_id,
             transaction: Arc::clone(&self.transaction),
             priority: self.priority.clone(),
-            sender: self.sender
+            sender: self.sender,
         }
     }
 }
@@ -140,9 +137,8 @@ where
     }
 }
 
-
 #[derive(Debug, Clone)]
-pub struct PendingPool<O> 
+pub struct PendingPool<O>
 where
     O: TransactionOrdering,
 {
@@ -166,7 +162,7 @@ where
     highest_nonces: BTreeSet<PendingTransaction<O>>,
 }
 
-impl<O> PendingPool<O> 
+impl<O> PendingPool<O>
 where
     O: TransactionOrdering,
 {
@@ -211,11 +207,7 @@ where
     /// # Panics
     ///
     /// if the transaction is already included
-    pub(crate) fn add_transaction(
-        &mut self,
-        tx: Arc<TxEnvelope>,
-        base_fee: u64,
-    ) {
+    pub(crate) fn add_transaction(&mut self, tx: Arc<TxEnvelope>, base_fee: u64) {
         let sender = tx.recover_signer().unwrap();
         let tx_id = TransactionId::new(sender, tx.nonce());
 
@@ -227,7 +219,12 @@ where
 
         let submission_id = self.next_id();
         let priority = self.ordering.priority(&tx, base_fee);
-        let tx = PendingTransaction { submission_id, transaction: tx, priority, sender };
+        let tx = PendingTransaction {
+            submission_id,
+            transaction: tx,
+            priority,
+            sender,
+        };
 
         self.update_independents_and_highest_nonces(&tx, &tx_id);
         self.all.insert(tx.clone());
@@ -259,10 +256,7 @@ where
     ///
     /// Note: If the transaction has a descendant transaction
     /// it will advance it to the best queue.
-    pub(crate) fn remove_transaction(
-        &mut self,
-        id: &TransactionId,
-    ) -> Option<Arc<TxEnvelope>> {
+    pub(crate) fn remove_transaction(&mut self, id: &TransactionId) -> Option<Arc<TxEnvelope>> {
         // mark the next as independent if it exists
         if let Some(unlocked) = self.get(&id.descendant()) {
             self.independent_transactions.insert(unlocked.clone());
@@ -290,17 +284,19 @@ where
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::helpers::{create_default_tx_and_sender, create_tx, create_tx_and_sender};
-    use alloy::primitives::U256;
     use crate::ordering::CoinbaseTipOrdering;
+    use crate::test_utils::helpers::{
+        create_default_tx_and_sender, create_tx, create_tx_and_sender,
+    };
+    use alloy::primitives::U256;
 
     #[tokio::test]
     async fn test_add_and_remove_transaction() {
-        let mut pool = PendingPool::<CoinbaseTipOrdering<TxEnvelope>>::new(CoinbaseTipOrdering::default());
+        let mut pool =
+            PendingPool::<CoinbaseTipOrdering<TxEnvelope>>::new(CoinbaseTipOrdering::default());
         let (tx, sender, _) = create_default_tx_and_sender().await;
         let tx_id = TransactionId::from(Arc::clone(&tx));
 
@@ -326,7 +322,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_remove_transaction_with_descendant() {
-        let mut pool = PendingPool::<CoinbaseTipOrdering<TxEnvelope>>::new(CoinbaseTipOrdering::default());
+        let mut pool =
+            PendingPool::<CoinbaseTipOrdering<TxEnvelope>>::new(CoinbaseTipOrdering::default());
         let (tx1, sender, private_key) = create_default_tx_and_sender().await;
         let tx2 = create_tx(private_key, sender, 15, 25, 100000, U256::ZERO, 1).await;
 
@@ -343,8 +340,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_ancestor() {
-        // Create a pool    
-        let mut pool = PendingPool::<CoinbaseTipOrdering<TxEnvelope>>::new(CoinbaseTipOrdering::default());
+        // Create a pool
+        let mut pool =
+            PendingPool::<CoinbaseTipOrdering<TxEnvelope>>::new(CoinbaseTipOrdering::default());
         // Create transactions
         let (tx1, sender, private_key) = create_default_tx_and_sender().await;
         let tx2 = create_tx(private_key.clone(), sender, 15, 25, 100000, U256::ZERO, 1).await;
@@ -388,26 +386,26 @@ mod tests {
     async fn test_ordering() {
         // Tests the ordering of transactions in the pool. We expect the transactions with the highest effective tip to be at the end of the sequence,
         // since we pop from the end of the sequence during execution.
-        let mut pool = PendingPool::<CoinbaseTipOrdering<TxEnvelope>>::new(CoinbaseTipOrdering::default());
-        
+        let mut pool =
+            PendingPool::<CoinbaseTipOrdering<TxEnvelope>>::new(CoinbaseTipOrdering::default());
+
         // effective tip = min(max_fee_per_gas - base_fee, max_priority_fee_per_gas)
         // effective tx1_tip = min(10 - 1, 20) = 9
-        let (tx1, sender1, _) = create_default_tx_and_sender().await; 
+        let (tx1, sender1, _) = create_default_tx_and_sender().await;
         // effective tx2_tip2 = min(20 - 1, 30) = 19
         let (tx2, sender2, _) = create_tx_and_sender(20, 30, 100000, U256::ZERO, 0).await;
         // effective tx3_tip = min(30 - 1, 40) = 29
         let (tx3, sender3, _) = create_tx_and_sender(30, 40, 100000, U256::ZERO, 0).await; // max_fee_per_gas = 30
-        // effective tx4_tip = min(40 - 1, 50) = 39
+                                                                                           // effective tx4_tip = min(40 - 1, 50) = 39
         let (tx4, sender4, _) = create_tx_and_sender(40, 50, 100000, U256::ZERO, 0).await; // max_fee_per_gas = 40
 
         pool.add_transaction(Arc::clone(&tx4), 1);
         pool.add_transaction(Arc::clone(&tx2), 1);
 
-        
         let ordered_txs: Vec<_> = pool.independent_transactions.iter().collect();
         assert_eq!(ordered_txs[0].sender, sender2);
         assert_eq!(ordered_txs[0].transaction.max_fee_per_gas(), 20);
-        assert_eq!(ordered_txs[0].priority, Priority::Value(U256::from(19)));   
+        assert_eq!(ordered_txs[0].priority, Priority::Value(U256::from(19)));
         assert_eq!(ordered_txs[1].sender, sender4);
         assert_eq!(ordered_txs[1].transaction.max_fee_per_gas(), 40);
         assert_eq!(ordered_txs[1].priority, Priority::Value(U256::from(39)));
@@ -416,7 +414,7 @@ mod tests {
 
         pool.add_transaction(Arc::clone(&tx3), 1);
         pool.add_transaction(Arc::clone(&tx1), 1);
-        
+
         // Check ordering with new transactions present
         let ordered_txs: Vec<_> = pool.independent_transactions.iter().collect();
 
@@ -435,4 +433,3 @@ mod tests {
         assert_eq!(ordered_txs[3].priority, Priority::Value(U256::from(39)));
     }
 }
-

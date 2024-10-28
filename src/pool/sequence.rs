@@ -13,18 +13,15 @@
 //! transaction pool, ensuring that transactions are processed in the correct order
 //! and that invalid transactions are properly handled.
 
-
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
 
-use tokio::sync::broadcast::{error::TryRecvError, Receiver};
-use alloy::primitives::TxHash;
 use alloy::consensus::{Transaction, TxEnvelope};
+use alloy::primitives::TxHash;
+use tokio::sync::broadcast::{error::TryRecvError, Receiver};
 
 use crate::{
-    ordering::TransactionOrdering,
-    pool::pending::PendingTransaction,
-    identifiers::TransactionId,
+    identifiers::TransactionId, ordering::TransactionOrdering, pool::pending::PendingTransaction,
 };
 
 #[derive(Debug, Clone)]
@@ -69,7 +66,6 @@ impl<O: TransactionOrdering> Default for TransactionSequence<O> {
     }
 }
 
-
 impl<O: TransactionOrdering> Iterator for TransactionSequence<O> {
     type Item = Arc<PendingTransaction<O>>;
 
@@ -82,11 +78,8 @@ impl<O: TransactionOrdering> Iterator for TransactionSequence<O> {
 
             // skip transactions that were marked as invalid
             if self.invalid.contains(hash) {
-                println!(
-                    "[{:?}] skipping invalid transaction",
-                    hash
-                );
-                continue
+                println!("[{:?}] skipping invalid transaction", hash);
+                continue;
             }
 
             // Insert transactions that just got unlocked.
@@ -118,7 +111,10 @@ where
 {
     /// Create a new [`TransactionSequenceFilter`] with the given predicate.
     pub(crate) const fn new(transaction_sequence: TransactionSequence<O>, predicate: P) -> Self {
-        Self { transaction_sequence, predicate }
+        Self {
+            transaction_sequence,
+            predicate,
+        }
     }
 }
 
@@ -134,39 +130,37 @@ where
         loop {
             let best = self.transaction_sequence.next()?;
             if (self.predicate)(&best) {
-                return Some(best)
+                return Some(best);
             }
             self.transaction_sequence.mark_invalid(&best.transaction());
         }
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy::primitives::Address;
     use crate::ordering::{CoinbaseTipOrdering, Priority};
     use crate::pool::pending::PendingTransaction;
+    use crate::test_utils::helpers::{
+        create_default_tx_and_sender, create_tx, create_tx_and_sender,
+    };
     use alloy::consensus::TxEnvelope;
-    use std::sync::Arc;
+    use alloy::primitives::Address;
     use alloy::primitives::U256;
-    use crate::test_utils::helpers::{create_default_tx_and_sender, create_tx, create_tx_and_sender};
+    use std::sync::Arc;
 
     #[tokio::test]
     async fn test_mark_invalid() {
         let mut sequence = TransactionSequence::<CoinbaseTipOrdering<TxEnvelope>>::default();
-        
+
         // Create a mock transaction
         let (tx, sender, _) = create_default_tx_and_sender().await;
         let base_fee = 5;
-        let priority: Priority<U256> = CoinbaseTipOrdering::<TxEnvelope>::default().priority(&tx, base_fee);
-        let pending_tx: PendingTransaction<CoinbaseTipOrdering<TxEnvelope>> = PendingTransaction::new(
-            0,
-            Arc::clone(&tx),
-            priority,
-            sender,
-        );
+        let priority: Priority<U256> =
+            CoinbaseTipOrdering::<TxEnvelope>::default().priority(&tx, base_fee);
+        let pending_tx: PendingTransaction<CoinbaseTipOrdering<TxEnvelope>> =
+            PendingTransaction::new(0, Arc::clone(&tx), priority, sender);
 
         // Mark the transaction as invalid
         sequence.mark_invalid(&tx);
@@ -199,8 +193,8 @@ mod tests {
             TransactionId::new(sender, 1),
             PendingTransaction::new(
                 1,
-            Arc::clone(&tx2),
-            ordering.priority(&tx2, base_fee),
+                Arc::clone(&tx2),
+                ordering.priority(&tx2, base_fee),
                 sender,
             ),
         );
@@ -211,7 +205,7 @@ mod tests {
         // Check ancestor
         assert!(sequence.ancestor(&tx2_id).is_some());
         assert_eq!(sequence.ancestor(&tx2_id).unwrap().transaction().nonce(), 0);
-        
+
         // Check that tx1 has no ancestor
         assert!(sequence.ancestor(&tx1_id).is_none());
     }
@@ -263,7 +257,13 @@ mod tests {
         );
 
         // Add transactions to the independent set
-        sequence.independent.insert(sequence.all.get(&TransactionId::new(sender, 0)).unwrap().clone());
+        sequence.independent.insert(
+            sequence
+                .all
+                .get(&TransactionId::new(sender, 0))
+                .unwrap()
+                .clone(),
+        );
 
         // First transaction
         let next_tx = sequence.next().unwrap();
@@ -291,7 +291,13 @@ mod tests {
                 sender,
             ),
         );
-        sequence.independent.insert(sequence.all.get(&TransactionId::new(sender, 0)).unwrap().clone());
+        sequence.independent.insert(
+            sequence
+                .all
+                .get(&TransactionId::new(sender, 0))
+                .unwrap()
+                .clone(),
+        );
         sequence.invalid.insert(*tx1.tx_hash());
 
         assert!(sequence.next().is_none());
@@ -341,7 +347,13 @@ mod tests {
         );
 
         // Add the first transaction to the independent set
-        sequence.independent.insert(sequence.all.get(&TransactionId::new(sender, 0)).unwrap().clone());
+        sequence.independent.insert(
+            sequence
+                .all
+                .get(&TransactionId::new(sender, 0))
+                .unwrap()
+                .clone(),
+        );
 
         // Mark the second transaction as invalid
         sequence.mark_invalid(&tx2);
@@ -395,7 +407,13 @@ mod tests {
         );
 
         // Add transaction 1 to the independent set
-        sequence.independent.insert(sequence.all.get(&TransactionId::new(sender, 0)).unwrap().clone());
+        sequence.independent.insert(
+            sequence
+                .all
+                .get(&TransactionId::new(sender, 0))
+                .unwrap()
+                .clone(),
+        );
 
         // Create a filter that only accepts transactions with even nonces
         let predicate = |tx: &Arc<PendingTransaction<CoinbaseTipOrdering<TxEnvelope>>>| {
@@ -416,4 +434,3 @@ mod tests {
         assert!(filter.next().is_none());
     }
 }
-

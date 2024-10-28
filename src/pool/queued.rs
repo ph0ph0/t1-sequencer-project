@@ -11,33 +11,26 @@
 //! The module also provides implementations for various traits like `Ord`, `PartialOrd`, `Eq`, and
 //! `PartialEq` to enable efficient sorting and comparison.
 
-
 use std::{
     cmp::Ordering,
-    collections::{
-        BTreeMap, 
-        BTreeSet, 
-        HashMap, 
-        hash_map::Entry as HashMapEntry
-    },
+    collections::{hash_map::Entry as HashMapEntry, BTreeMap, BTreeSet, HashMap},
     fmt::{self, Debug},
     sync::Arc,
 };
 
 use alloy::{
-    consensus::{TxEnvelope, Transaction},
+    consensus::{Transaction, TxEnvelope},
     primitives::Address,
 };
 
-use crate::identifiers::{TransactionId, SenderTransactionCount};
-
+use crate::identifiers::{SenderTransactionCount, TransactionId};
 
 #[derive(PartialOrd, Eq, PartialEq, Debug)]
 pub struct QueuedPoolTransaction {
     /// Id to indicate when transaction was added to pool
     submission_id: u64,
     /// The transaction
-    transaction: QueuedOrderedTransaction
+    transaction: QueuedOrderedTransaction,
 }
 
 impl Ord for QueuedPoolTransaction {
@@ -54,7 +47,7 @@ impl Clone for QueuedPoolTransaction {
     fn clone(&self) -> Self {
         Self {
             submission_id: self.submission_id,
-            transaction: self.transaction.clone()
+            transaction: self.transaction.clone(),
         }
     }
 }
@@ -78,8 +71,7 @@ impl QueuedOrderedTransaction {
 impl Ord for QueuedOrderedTransaction {
     // Sort in descending order (ie higher gas fees towards end of set)
     fn cmp(&self, other: &Self) -> Ordering {
-        other.max_fee_per_gas()
-            .cmp(&self.max_fee_per_gas())
+        other.max_fee_per_gas().cmp(&self.max_fee_per_gas())
     }
 }
 
@@ -116,16 +108,15 @@ pub struct QueuedPool {
     /// All transaction currently inside the pool grouped by sender and ordered by nonce
     by_id: BTreeMap<TransactionId, QueuedPoolTransaction>,
     /// All transactions sorted by their order function. The higher the better.
-    /// 
+    ///
     /// These are the transactions that could be promoted to pending
     best: BTreeSet<QueuedPoolTransaction>,
 
     /// Keeps track of the number of transactions in the pool by the sender and the last submission id.
-    sender_transaction_count: HashMap<Address, SenderTransactionCount>
+    sender_transaction_count: HashMap<Address, SenderTransactionCount>,
 }
 
 impl QueuedPool {
-
     /// Returns `true` if the transaction with the given id is already included in this pool.
     pub(crate) fn contains(&self, id: &TransactionId) -> bool {
         self.by_id.contains_key(id)
@@ -150,7 +141,7 @@ impl QueuedPool {
     /// If the transaction is already included.
     pub(crate) fn add_transaction(&mut self, tx: Arc<TxEnvelope>) {
         let sender = tx.recover_signer().unwrap();
-        let id = TransactionId::new(sender, tx.nonce());    
+        let id = TransactionId::new(sender, tx.nonce());
         assert!(
             !self.contains(&id),
             "transaction already included {:?}",
@@ -160,7 +151,10 @@ impl QueuedPool {
 
         // update or create sender entry
         self.add_sender_count(sender, submission_id);
-        let transaction = QueuedPoolTransaction { submission_id, transaction: tx.into() };
+        let transaction = QueuedPoolTransaction {
+            submission_id,
+            transaction: tx.into(),
+        };
 
         self.by_id.insert(id, transaction.clone());
         self.best.insert(transaction);
@@ -177,8 +171,10 @@ impl QueuedPool {
                 value.last_submission_id = submission_id;
             }
             HashMapEntry::Vacant(entry) => {
-                entry
-                    .insert(SenderTransactionCount { count: 1, last_submission_id: submission_id });
+                entry.insert(SenderTransactionCount {
+                    count: 1,
+                    last_submission_id: submission_id,
+                });
             }
         }
     }
@@ -200,7 +196,7 @@ impl QueuedPool {
                 if value.count == 0 {
                     entry.remove()
                 } else {
-                    return
+                    return;
                 }
             }
             HashMapEntry::Vacant(_) => {
@@ -222,12 +218,13 @@ impl Default for QueuedPool {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_utils::helpers::{
+        create_default_tx_and_sender, create_tx, create_tx_and_sender,
+    };
     use alloy::primitives::U256;
-    use crate::test_utils::helpers::{create_default_tx_and_sender, create_tx, create_tx_and_sender};
 
     #[tokio::test]
     async fn test_add_transaction() {
@@ -335,4 +332,3 @@ mod tests {
         assert!(!pool.sender_transaction_count.contains_key(&sender2));
     }
 }
-

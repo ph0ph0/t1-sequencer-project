@@ -10,24 +10,21 @@
 //! - Keeps track of the number of transactions per sender
 //! - Provides methods for adding, removing, and querying transactions
 
-
-use std::{
-    collections::{BTreeMap, HashMap, hash_map},
-    sync::Arc,
+use crate::{
+    identifiers::TransactionId,
+    pool::{state::SubPool, PoolInternalTransaction},
 };
 use alloy::{
-    primitives::{Address, TxHash},
     consensus::TxEnvelope,
+    primitives::{Address, TxHash},
 };
-use crate::{
-    pool::{PoolInternalTransaction, state::SubPool},
-    identifiers::TransactionId,
+use std::{
+    collections::{hash_map, BTreeMap, HashMap},
+    sync::Arc,
 };
 
 #[derive(Debug, Clone, Default)]
-pub struct AllTransactions
-where 
-{
+pub struct AllTransactions {
     /// All transactions in the pool, grouped by sender, orderd by nonce
     pub(crate) txs: BTreeMap<TransactionId, PoolInternalTransaction>,
     /// All transactions in the pool ordered by hash
@@ -36,14 +33,13 @@ where
     pub(crate) tx_counter: HashMap<Address, usize>,
 }
 
-impl AllTransactions
-{
+impl AllTransactions {
     /// Creates new instance
     pub(crate) fn new(&self) -> Self {
         Self {
             txs: BTreeMap::new(),
             by_hash: HashMap::new(),
-            tx_counter: HashMap::new()
+            tx_counter: HashMap::new(),
         }
     }
 
@@ -89,21 +85,20 @@ impl AllTransactions
         &'a mut self,
         id: &'b TransactionId,
     ) -> impl Iterator<Item = (&'a TransactionId, &'a mut PoolInternalTransaction)> + 'a {
-        self.txs.range_mut(id..).take_while(|(other, _)| id.sender == other.sender)
+        self.txs
+            .range_mut(id..)
+            .take_while(|(other, _)| id.sender == other.sender)
     }
 }
-
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     use alloy::primitives::{B256, U256};
 
     use crate::test_utils::helpers::{
-        create_default_tx_and_sender, 
-        create_pool_internal_tx,
-        create_tx,
+        create_default_tx_and_sender, create_pool_internal_tx, create_tx,
     };
 
     #[tokio::test]
@@ -161,7 +156,9 @@ mod tests {
         assert_eq!(all_txs.tx_counter.get(&sender), None);
 
         // Attempt to remove a non-existent transaction
-        assert!(all_txs.remove_transaction_by_hash(&B256::random()).is_none());
+        assert!(all_txs
+            .remove_transaction_by_hash(&B256::random())
+            .is_none());
     }
 
     #[tokio::test]
@@ -178,9 +175,15 @@ mod tests {
         let tx3_id = TransactionId::from(Arc::clone(&tx3));
 
         // Insert the transactions into the pool
-        all_txs.txs.insert(tx1_id.clone(), create_pool_internal_tx(Arc::clone(&tx1)));
-        all_txs.txs.insert(tx2_id.clone(), create_pool_internal_tx(Arc::clone(&tx2)));
-        all_txs.txs.insert(tx3_id.clone(), create_pool_internal_tx(Arc::clone(&tx3)));
+        all_txs
+            .txs
+            .insert(tx1_id.clone(), create_pool_internal_tx(Arc::clone(&tx1)));
+        all_txs
+            .txs
+            .insert(tx2_id.clone(), create_pool_internal_tx(Arc::clone(&tx2)));
+        all_txs
+            .txs
+            .insert(tx3_id.clone(), create_pool_internal_tx(Arc::clone(&tx3)));
 
         // Get the descendants
         let descendants: Vec<_> = all_txs.descendant_txs_mut(&tx1_id).collect();
@@ -203,5 +206,3 @@ mod tests {
         assert!(non_existent_descendants.is_empty());
     }
 }
-
-

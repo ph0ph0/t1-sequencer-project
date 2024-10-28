@@ -7,7 +7,6 @@
 //! The module also provides implementations and associated functions for `TxState` to facilitate
 //! transaction state management and sub-pool assignment.
 
-
 bitflags::bitflags! {
     /// Marker to represents the current state of a transaction in the pool and from which the corresponding sub-pool is derived, depending on what bits are set.
     ///
@@ -87,7 +86,7 @@ pub enum SubPool {
     // Queued pool holds transactions that cannot be added to Pending due to nonce gaps or lack of funds
     Queued = 0,
     // Pending pool contains transactions that can be executed on the current statex
-    Pending
+    Pending,
 }
 
 // === impl SubPool ===
@@ -115,10 +114,10 @@ impl SubPool {
 impl From<TxState> for SubPool {
     fn from(value: TxState) -> Self {
         if value.is_pending() {
-            return Self::Pending
+            return Self::Pending;
         }
         if value.bits() < TxState::BASE_FEE_POOL_BITS.bits() {
-            return Self::Queued
+            return Self::Queued;
         }
         Self::Queued
     }
@@ -146,10 +145,10 @@ mod tests {
         let state = TxState::default();
         assert_eq!(SubPool::Queued, state.into());
 
-        let state = TxState::NO_PARKED_ANCESTORS |
-            TxState::NO_NONCE_GAPS |
-            TxState::NOT_TOO_MUCH_GAS |
-            TxState::ENOUGH_FEE_CAP_BLOCK;
+        let state = TxState::NO_PARKED_ANCESTORS
+            | TxState::NO_NONCE_GAPS
+            | TxState::NOT_TOO_MUCH_GAS
+            | TxState::ENOUGH_FEE_CAP_BLOCK;
         assert_eq!(SubPool::Queued, state.into());
     }
 

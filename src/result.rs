@@ -4,7 +4,6 @@
 //! the outcomes of operations on the transaction pool, such as adding
 //! transactions or updating the pool state.
 
-
 use alloy::{
     consensus::TxEnvelope,
     primitives::{Address, TxHash},
@@ -19,15 +18,14 @@ use crate::{
 
 /// The result of adding a transaction to the pool.
 #[derive(Debug, Eq, PartialEq, Clone)]
-pub enum AddedTransaction
-{
+pub enum AddedTransaction {
     Pending(AddedPendingTransaction),
 
     Queued {
         transaction: Arc<TxEnvelope>,
         replaced: Option<Arc<TxEnvelope>>,
-        subpool: SubPool
-    }
+        subpool: SubPool,
+    },
 }
 
 /// The result of adding a transaction to the pending pool.
@@ -54,7 +52,10 @@ pub(crate) struct UpdateOutcome {
 
 impl Default for UpdateOutcome {
     fn default() -> Self {
-        Self { promoted: vec![], discarded: vec![] }
+        Self {
+            promoted: vec![],
+            discarded: vec![],
+        }
     }
 }
 
@@ -79,7 +80,7 @@ impl PoolUpdate {
         id: TransactionId,
         hash: TxHash,
         current: SubPool,
-        destination: Destination
+        destination: Destination,
     ) -> Self {
         Self {
             id,
@@ -89,7 +90,6 @@ impl PoolUpdate {
         }
     }
 }
-
 
 /// Where to move an existing transaction.
 #[derive(Debug, Eq, PartialEq, Clone)]
@@ -115,7 +115,7 @@ pub struct InsertOk {
     /// The transaction that was replaced
     pub replaced_tx: Option<(Arc<TxEnvelope>, SubPool)>,
     /// Additional updates to transactions affected by this change
-    pub updates: Vec<PoolUpdate>
+    pub updates: Vec<PoolUpdate>,
 }
 
 /// The error result of inserting a transaction into the pool.
@@ -124,10 +124,7 @@ pub(crate) enum InsertErr {
     /// Unknown transaction error, currently only Eip1559 transactions are handled
     UnknownTransactionType,
     /// On-chain nonce must be less than or equal to the transaction nonce
-    InvalidTxNonce {
-        on_chain_nonce: u64,
-        tx_nonce: u64,
-    },
+    InvalidTxNonce { on_chain_nonce: u64, tx_nonce: u64 },
     /// Error in the signature of the transaction
     SignatureError,
     /// Attempted to replace existing transaction, but was underpriced
@@ -136,7 +133,7 @@ pub(crate) enum InsertErr {
         existing: TxHash,
     },
     /// The transactions fee_cap is lower than the chain's minimum fee requirement.
-    /// 
+    ///
     /// fee_cap is the transaction's max_fee_per_gas
     FeeCapBelowMinimumProtocolFeeCap { fee_cap: u128 },
     /// Sender currently exceeds the configured limit for max account slots.
@@ -152,7 +149,6 @@ pub(crate) enum InsertErr {
 /// Transaction pool result type.
 pub type PoolResult<T> = Result<T, PoolError>;
 
-
 /// Transaction pool error
 #[derive(Debug, thiserror::Error, Eq, PartialEq, Clone)]
 #[error("[{hash}]: {kind}")]
@@ -160,19 +156,16 @@ pub struct PoolError {
     /// Hash of the transaction that caused the error
     pub hash: TxHash,
     /// The kind of error
-    pub kind: PoolErrorKind
+    pub kind: PoolErrorKind,
 }
 
 impl PoolError {
     pub fn new(hash: TxHash, kind: PoolErrorKind) -> Self {
-        Self {
-            hash,
-            kind
-        }
+        Self { hash, kind }
     }
 }
 
-/// The kind of pool error 
+/// The kind of pool error
 #[derive(Debug, thiserror::Error, Eq, PartialEq, Clone)]
 pub enum PoolErrorKind {
     /// Transaction already exists in the pool

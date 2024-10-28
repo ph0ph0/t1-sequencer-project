@@ -8,14 +8,12 @@
 //! such as finding ancestor and descendant transactions, which is crucial for
 //! maintaining proper transaction ordering and dependency management in the pool.
 
-
 use std::sync::Arc;
 
 use alloy::{
-    consensus::{TxEnvelope, Transaction},
+    consensus::{Transaction, TxEnvelope},
     primitives::Address,
 };
-
 
 /// A unique identifier of a transaction of a Sender.
 ///
@@ -26,25 +24,20 @@ pub struct TransactionId {
     /// Sender of this transaction
     pub sender: Address,
     /// Nonce of this transaction
-    pub nonce: u64
+    pub nonce: u64,
 }
 
 impl TransactionId {
     pub const fn new(sender: Address, nonce: u64) -> Self {
-        Self {
-            sender,
-            nonce
-        }
+        Self { sender, nonce }
     }
 
-    pub fn ancestor(tx_nonce: u64, on_chain_nonce: u64, signer: Address) -> Option<Self>{
-        (tx_nonce > on_chain_nonce)
-            .then(|| Self::new(signer, tx_nonce.saturating_sub(1)))
+    pub fn ancestor(tx_nonce: u64, on_chain_nonce: u64, signer: Address) -> Option<Self> {
+        (tx_nonce > on_chain_nonce).then(|| Self::new(signer, tx_nonce.saturating_sub(1)))
     }
 
     pub fn unchecked_ancestor(&self) -> Option<Self> {
-        (self.nonce != 0)
-            .then(|| Self::new(self.sender, self.nonce - 1))
+        (self.nonce != 0).then(|| Self::new(self.sender, self.nonce - 1))
     }
 
     pub const fn descendant(&self) -> Self {
@@ -67,9 +60,8 @@ impl From<Arc<TxEnvelope>> for TransactionId {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SenderTransactionCount {
     pub count: u64,
-    pub last_submission_id: u64
+    pub last_submission_id: u64,
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -80,7 +72,7 @@ mod tests {
     #[test]
     fn test_ancestor() {
         let sender = Address::random();
-        
+
         // Case: tx_nonce > on_chain_nonce
         assert_eq!(
             TransactionId::ancestor(5, 3, sender),
@@ -124,4 +116,3 @@ mod tests {
         assert_eq!(tx_id.next_nonce(), 6);
     }
 }
-
