@@ -10,17 +10,19 @@
 //! - Keeps track of the number of transactions per sender
 //! - Provides methods for adding, removing, and querying transactions
 
-use crate::{
-    identifiers::TransactionId,
-    pool::{state::SubPool, PoolInternalTransaction},
+use std::{
+    collections::{hash_map, BTreeMap, HashMap},
+    sync::Arc,
 };
+
 use alloy::{
     consensus::TxEnvelope,
     primitives::{Address, TxHash},
 };
-use std::{
-    collections::{hash_map, BTreeMap, HashMap},
-    sync::Arc,
+
+use crate::{
+    identifiers::TransactionId,
+    pool::{state::SubPool, PoolInternalTransaction},
 };
 
 #[derive(Debug, Clone, Default)]

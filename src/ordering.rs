@@ -78,8 +78,8 @@ impl<T> Clone for CoinbaseTipOrdering<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::helpers::create_tx_and_sender;
     use alloy::primitives::U256;
+    use crate::test_utils::helpers::create_tx_and_sender;
 
     #[tokio::test]
     async fn test_coinbase_tip_ordering_priority_with_default_fees() {

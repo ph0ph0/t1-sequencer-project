@@ -142,14 +142,14 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use alloy::consensus::TxEnvelope;
+    use alloy::primitives::U256;
     use crate::ordering::CoinbaseTipOrdering;
     use crate::pool::pending::PendingTransaction;
     use crate::test_utils::helpers::{
         create_default_tx_and_sender, create_tx,
     };
-    use alloy::consensus::TxEnvelope;
-    use alloy::primitives::U256;
-    use std::sync::Arc;
 
     #[tokio::test]
     async fn test_mark_invalid() {

@@ -4,11 +4,12 @@
 //! the outcomes of operations on the transaction pool, such as adding
 //! transactions or updating the pool state.
 
+use std::sync::Arc;
+
 use alloy::{
     consensus::TxEnvelope,
     primitives::{Address, TxHash},
 };
-use std::sync::Arc;
 use thiserror;
 
 use crate::{

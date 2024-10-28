@@ -914,9 +914,8 @@ impl PoolInternalTransaction {
 #[cfg(test)]
 mod tests {
 
-    // test the different actions of add/remove/update etc
-
     use super::*;
+    use alloy::primitives::U256;
     use crate::ordering::CoinbaseTipOrdering;
     use crate::pool::PoolConfig;
     use crate::result::{AddedTransaction, PoolErrorKind, };
@@ -925,7 +924,6 @@ mod tests {
         create_pool_internal_tx, create_pool_internal_tx_with_cumulative_cost, create_sender,
          create_tx_and_sender, create_tx_envelope_with_sender,
     };
-    use alloy::primitives::U256;
 
     fn create_test_pool() -> Pool<CoinbaseTipOrdering<TxEnvelope>> {
         create_test_pool_with_config(PoolConfig {
