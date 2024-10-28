@@ -35,6 +35,7 @@ pub struct AllTransactions {
 
 impl AllTransactions {
     /// Creates new instance
+    #[allow(dead_code)]
     pub(crate) fn new(&self) -> Self {
         Self {
             txs: BTreeMap::new(),
@@ -200,7 +201,7 @@ mod tests {
         assert_eq!(descendants_of_tx3[0].0, &tx3_id);
 
         // Test with a non-existent transaction
-        let (tx_two, sender_two, _) = create_default_tx_and_sender().await;
+        let (tx_two, _, _) = create_default_tx_and_sender().await;
         let tx_two_id = TransactionId::from(Arc::clone(&tx_two));
         let non_existent_descendants: Vec<_> = all_txs.descendant_txs_mut(&tx_two_id).collect();
         assert!(non_existent_descendants.is_empty());

@@ -63,7 +63,7 @@ impl Default for UpdateOutcome {
 ///
 /// NOTE: this guarantees that `current` and `destination` differ.
 #[derive(Debug, Eq, PartialEq, Clone)]
-pub(crate) struct PoolUpdate {
+pub struct PoolUpdate {
     /// Internal tx id.
     pub(crate) id: TransactionId,
     /// Hash of the transaction.
@@ -76,6 +76,7 @@ pub(crate) struct PoolUpdate {
 
 impl PoolUpdate {
     /// Creates a new `PoolUpdate` instance.
+    #[allow(dead_code)]
     pub(crate) fn new(
         id: TransactionId,
         hash: TxHash,
@@ -93,6 +94,7 @@ impl PoolUpdate {
 
 /// Where to move an existing transaction.
 #[derive(Debug, Eq, PartialEq, Clone)]
+#[allow(dead_code)]
 pub(crate) enum Destination {
     /// Discard the transaction.
     Discard,
@@ -105,6 +107,7 @@ pub(crate) type InsertResult = Result<InsertOk, InsertErr>;
 
 /// The success result of inserting a transaction into the pool.
 #[derive(Debug, Eq, PartialEq, Clone)]
+#[allow(dead_code)]
 pub struct InsertOk {
     /// Reference to the transaction
     pub transaction: Arc<TxEnvelope>,

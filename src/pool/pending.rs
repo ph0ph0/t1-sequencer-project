@@ -297,7 +297,7 @@ mod tests {
     async fn test_add_and_remove_transaction() {
         let mut pool =
             PendingPool::<CoinbaseTipOrdering<TxEnvelope>>::new(CoinbaseTipOrdering::default());
-        let (tx, sender, _) = create_default_tx_and_sender().await;
+        let (tx, _, _) = create_default_tx_and_sender().await;
         let tx_id = TransactionId::from(Arc::clone(&tx));
 
         // Insert transaction

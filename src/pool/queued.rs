@@ -230,7 +230,6 @@ mod tests {
     async fn test_add_transaction() {
         let mut pool = QueuedPool::default();
         let (tx, sender, _) = create_default_tx_and_sender().await;
-        let id = TransactionId::from(tx.clone());
 
         pool.add_transaction(tx.clone());
 
@@ -258,8 +257,8 @@ mod tests {
     #[tokio::test]
     async fn test_transaction_ordering() {
         let mut pool = QueuedPool::default();
-        let (tx1, sender1, _) = create_default_tx_and_sender().await; // max_fee_per_gas = 10
-        let (tx2, sender2, _) = create_tx_and_sender(20, 30, 100000, U256::ZERO, 0).await; // max_fee_per_gas = 20
+        let (tx1, _, _) = create_default_tx_and_sender().await; // max_fee_per_gas = 10
+        let (tx2, _, _) = create_tx_and_sender(20, 30, 100000, U256::ZERO, 0).await; // max_fee_per_gas = 20
 
         // Add transactions to the pool
         pool.add_transaction(tx1.clone());
@@ -271,8 +270,8 @@ mod tests {
         assert_eq!(ordered_txs[1].transaction.0.max_fee_per_gas(), 10);
 
         // Add some more transactions
-        let (tx3, sender3, _) = create_tx_and_sender(30, 40, 100000, U256::ZERO, 0).await; // max_fee_per_gas = 30
-        let (tx4, sender4, _) = create_tx_and_sender(40, 50, 100000, U256::ZERO, 0).await; // max_fee_per_gas = 40
+        let (tx3, _, _) = create_tx_and_sender(30, 40, 100000, U256::ZERO, 0).await; // max_fee_per_gas = 30
+        let (tx4, _, _) = create_tx_and_sender(40, 50, 100000, U256::ZERO, 0).await; // max_fee_per_gas = 40
 
         pool.add_transaction(tx3.clone());
         pool.add_transaction(tx4.clone());

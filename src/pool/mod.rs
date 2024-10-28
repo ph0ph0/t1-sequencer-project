@@ -435,7 +435,6 @@ where
             tx_nonce,
             signer,
             gas_limit,
-            unsigned_tx,
         )
     }
 
@@ -467,7 +466,6 @@ where
         tx_nonce: u64,
         signer: Address,
         gas_limit: u64,
-        unsigned_tx: &TxEip1559,
     ) -> InsertResult {
         // Initialize the transaction state
         let state =
@@ -886,6 +884,7 @@ pub(crate) struct PoolInternalTransaction {
 
 impl PoolInternalTransaction {
     /// Returns the transaction
+    #[allow(dead_code)]
     fn transaction(&self) -> Arc<TxEnvelope> {
         self.transaction.clone()
     }
@@ -921,14 +920,14 @@ mod tests {
 
     use super::*;
     use crate::ordering::CoinbaseTipOrdering;
-    use crate::pool::{AllTransactions, PendingPool, PoolConfig, QueuedPool};
-    use crate::result::{AddedTransaction, PoolError, PoolErrorKind, PoolResult};
+    use crate::pool::PoolConfig;
+    use crate::result::{AddedTransaction, PoolErrorKind, };
     use crate::test_utils::helpers::{
         create_default_tx_and_sender, create_default_tx_envelope_and_sender,
         create_pool_internal_tx, create_pool_internal_tx_with_cumulative_cost, create_sender,
-        create_tx, create_tx_and_sender, create_tx_envelope_with_sender,
+         create_tx_and_sender, create_tx_envelope_with_sender,
     };
-    use alloy::primitives::{Address, U256};
+    use alloy::primitives::U256;
 
     fn create_test_pool() -> Pool<CoinbaseTipOrdering<TxEnvelope>> {
         create_test_pool_with_config(PoolConfig {
@@ -947,7 +946,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_pool_internal_transaction_cumulative_cost() {
-        let (tx, sender, _) = create_default_tx_and_sender().await;
+        let (tx, _, _) = create_default_tx_and_sender().await;
         let pool_internal_tx = create_pool_internal_tx(Arc::clone(&tx));
 
         // Calculate expected cost
@@ -1321,9 +1320,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_ensure_valid_success() {
-        let mut pool = create_test_pool();
+        let pool = create_test_pool();
         let (sender, private_key) = create_sender();
-        let on_chain_balance = U256::from(1_000_000_000);
         let on_chain_nonce = 0;
 
         let tx = create_tx_envelope_with_sender(
@@ -1351,21 +1349,10 @@ mod tests {
     async fn test_ensure_valid_exceeded_sender_transactions_capacity() {
         let mut pool = create_test_pool();
         let (sender, private_key) = create_sender();
-        let on_chain_balance = U256::from(1_000_000_000);
         let on_chain_nonce = 0;
 
         // Fill up the pool to max capacity
-        for i in 0..pool.config.max_account_slots {
-            let tx = create_tx_envelope_with_sender(
-                private_key.clone(),
-                sender,
-                20,
-                10,
-                100_000,
-                U256::ZERO,
-                on_chain_nonce + i as u64,
-            )
-            .await;
+        for _ in 0..pool.config.max_account_slots {
             pool.all_transactions.tx_inc(sender);
         }
 
@@ -1395,9 +1382,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_ensure_valid_tx_gas_limit_more_than_available_block_gas() {
-        let mut pool = create_test_pool();
+        let pool = create_test_pool();
         let (sender, private_key) = create_sender();
-        let on_chain_balance = U256::from(1_000_000_000);
         let on_chain_nonce = 0;
 
         let tx = create_tx_envelope_with_sender(
@@ -1426,9 +1412,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_ensure_valid_invalid_tx_nonce() {
-        let mut pool = create_test_pool();
+        let pool = create_test_pool();
         let (sender, private_key) = create_sender();
-        let on_chain_balance = U256::from(1_000_000_000);
         let on_chain_nonce = 5;
 
         let tx = create_tx_envelope_with_sender(

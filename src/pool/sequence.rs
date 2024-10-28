@@ -16,9 +16,9 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
 
+#[allow(unused_imports)]
 use alloy::consensus::{Transaction, TxEnvelope};
 use alloy::primitives::TxHash;
-use tokio::sync::broadcast::{error::TryRecvError, Receiver};
 
 use crate::{
     identifiers::TransactionId, ordering::TransactionOrdering, pool::pending::PendingTransaction,
@@ -51,6 +51,7 @@ impl<O: TransactionOrdering> TransactionSequence<O> {
     ///
     /// Note: for a transaction with nonce higher than the current on chain nonce this will always
     /// return an ancestor since all transaction in this pool are gapless.
+    #[allow(dead_code)]
     pub(crate) fn ancestor(&self, id: &TransactionId) -> Option<&PendingTransaction<O>> {
         self.all.get(&id.unchecked_ancestor()?)
     }
@@ -110,6 +111,7 @@ where
     O: TransactionOrdering,
 {
     /// Create a new [`TransactionSequenceFilter`] with the given predicate.
+    #[allow(dead_code)]
     pub(crate) const fn new(transaction_sequence: TransactionSequence<O>, predicate: P) -> Self {
         Self {
             transaction_sequence,
@@ -140,13 +142,12 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ordering::{CoinbaseTipOrdering, Priority};
+    use crate::ordering::CoinbaseTipOrdering;
     use crate::pool::pending::PendingTransaction;
     use crate::test_utils::helpers::{
-        create_default_tx_and_sender, create_tx, create_tx_and_sender,
+        create_default_tx_and_sender, create_tx,
     };
     use alloy::consensus::TxEnvelope;
-    use alloy::primitives::Address;
     use alloy::primitives::U256;
     use std::sync::Arc;
 
@@ -155,12 +156,7 @@ mod tests {
         let mut sequence = TransactionSequence::<CoinbaseTipOrdering<TxEnvelope>>::default();
 
         // Create a mock transaction
-        let (tx, sender, _) = create_default_tx_and_sender().await;
-        let base_fee = 5;
-        let priority: Priority<U256> =
-            CoinbaseTipOrdering::<TxEnvelope>::default().priority(&tx, base_fee);
-        let pending_tx: PendingTransaction<CoinbaseTipOrdering<TxEnvelope>> =
-            PendingTransaction::new(0, Arc::clone(&tx), priority, sender);
+        let (tx, _, _) = create_default_tx_and_sender().await;
 
         // Mark the transaction as invalid
         sequence.mark_invalid(&tx);

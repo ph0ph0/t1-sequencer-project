@@ -23,11 +23,13 @@ use crate::pool::{
 
 // === Sender and Transactions ===
 
+#[allow(dead_code)]
 pub fn create_sender() -> (Address, SigningKey<Secp256k1>) {
     let private_key = SigningKey::random(&mut OsRng);
     let address = secret_key_to_address(&private_key);
     (address, private_key)
 }
+#[allow(dead_code)]
 pub async fn create_tx(
     private_key: SigningKey<Secp256k1>,
     sender: Address,
@@ -74,7 +76,7 @@ pub async fn create_tx(
     // Return the transaction envelope
     Arc::new(tx_env)
 }
-
+#[allow(dead_code)]
 pub async fn create_tx_and_sender(
     max_fee_per_gas: u128,
     max_priority_fee_per_gas: u128,
@@ -96,18 +98,18 @@ pub async fn create_tx_and_sender(
 
     (tx, sender, private_key)
 }
-
+#[allow(dead_code)]
 pub async fn create_default_tx_and_sender() -> (Arc<TxEnvelope>, Address, SigningKey<Secp256k1>) {
     create_tx_and_sender(10, 20, 100000, U256::ZERO, 0).await
 }
-
+#[allow(dead_code)]
 pub async fn create_default_tx_envelope_and_sender() -> (TxEnvelope, Address, SigningKey<Secp256k1>)
 {
     let (tx, sender, private_key) = create_default_tx_and_sender().await;
     let tx_envelope = Arc::try_unwrap(tx).expect("Failed to unwrap Arc<TxEnvelope>");
     (tx_envelope, sender, private_key)
 }
-
+#[allow(dead_code)]
 pub async fn create_tx_envelope_with_sender(
     private_key: SigningKey<Secp256k1>,
     sender: Address,
@@ -132,7 +134,7 @@ pub async fn create_tx_envelope_with_sender(
 }
 
 // === Pool Internal Transaction ===
-
+#[allow(dead_code)]
 pub fn create_pool_internal_tx(tx: Arc<TxEnvelope>) -> PoolInternalTransaction {
     let mut state = TxState::default();
     state.insert(TxState::NO_PARKED_ANCESTORS);
@@ -157,7 +159,7 @@ pub fn create_pool_internal_tx(tx: Arc<TxEnvelope>) -> PoolInternalTransaction {
 
     pool_internal_tx
 }
-
+#[allow(dead_code)]
 pub fn create_pool_internal_tx_with_cumulative_cost(
     tx: Arc<TxEnvelope>,
     cumulative_cost: U256,

@@ -18,7 +18,7 @@ bitflags::bitflags! {
     ///
     /// Otherwise, it belongs in the queued sub-pool: [SubPool::Queued].
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, PartialOrd, Ord)]
-    pub(crate) struct TxState: u8 {
+    pub struct TxState: u8 {
         /// Set to `1` if all ancestor transactions are pending.
         const NO_PARKED_ANCESTORS = 0b10000000;
         /// Set to `1` of the transaction is either the next transaction of the sender (on chain nonce == tx.nonce) or all prior transactions are also present in the pool.
@@ -68,12 +68,14 @@ impl TxState {
 
     /// Whether this transaction is a blob transaction.
     #[inline]
+    #[allow(dead_code)]
     pub(crate) const fn is_blob(&self) -> bool {
         self.contains(Self::BLOB_TRANSACTION)
     }
 
     /// Returns `true` if the transaction has a nonce gap.
     #[inline]
+    #[allow(dead_code)]
     pub(crate) const fn has_nonce_gap(&self) -> bool {
         !self.intersects(Self::NO_NONCE_GAPS)
     }
