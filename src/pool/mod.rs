@@ -485,7 +485,6 @@ where
         )
     }
 
-    //TODO: Correct error type in the return statement
     fn initialize_tx_state(
         &self,
         transaction: &Arc<TxEnvelope>,
