@@ -26,7 +26,7 @@ use std::collections::btree_map::Entry;
 use std::sync::Arc;
 
 use alloy::{
-    consensus::{TxEnvelope, Transaction},
+    consensus::{TxEnvelope, Transaction, TxEip1559, Signed},
     primitives::{Address, B256, U256, aliases::TxHash},
 };
 
@@ -405,67 +405,105 @@ where
         on_chain_balance: U256,
         on_chain_nonce: u64,
     ) -> InsertResult {
-
         let transaction = Arc::new(transaction);
-
-        // Get the Signed<TxEip1559> type
-        let signed_tx = match &*transaction {
-            TxEnvelope::Eip1559(signed_tx) => Ok(signed_tx),
-            _ => Err(InsertErr::UnknownTransactionType)
-        }?;
-
-        // Get the TxEip1559 type so we can access its properties (ie gas_limit, nonce etc)
-        let unsigned_tx = signed_tx.tx();
-
-        // Get transaction signer
-        let signer = &transaction
-            .recover_signer()
-            .map_err(|_| InsertErr::SignatureError)?;
-        // Get nonce
+        let (_, unsigned_tx) = self.extract_tx_details(&transaction)?;
+        let signer = self.recover_signer(&transaction)?;
         let tx_nonce = unsigned_tx.nonce;
-        // Get gas_limit
         let gas_limit = unsigned_tx.gas_limit();
 
-
-        // Validate the transaction
-        // Checks the following:
-        // - enough transaction slots for user
-        // - tx_gas_limit > block_gas_limit
-        // - on_chain_nonce <= tx_nonce
-        let transaction = self.ensure_valid(Arc::clone(&transaction), gas_limit, &signer, on_chain_nonce, tx_nonce)?;
-
-
-        // Create TransactionId
         let transaction_id = TransactionId {
             sender: signer.clone(),
             nonce: tx_nonce
-
         };
 
-        let mut state = TxState::default();
+        self.process_transaction(
+            transaction.clone(), 
+            transaction_id, 
+            on_chain_balance, 
+            on_chain_nonce, 
+            tx_nonce, 
+            signer, 
+            gas_limit,
+            unsigned_tx
+        )
+    }
 
-        let mut cumulative_cost = U256::ZERO;
-        let mut updates = Vec::new();
+    /// Extracts the signed and unsigned transaction details
+    fn extract_tx_details<'a>(
+        &self, 
+        transaction: &'a Arc<TxEnvelope>
+    ) -> Result<(&'a Signed<TxEip1559>, &'a TxEip1559), InsertErr> {
+        match &**transaction {
+            TxEnvelope::Eip1559(signed_tx) => Ok((signed_tx, signed_tx.tx())),
+            _ => Err(InsertErr::UnknownTransactionType)
+        }
+    }
+
+    /// Recovers the signer of the transaction
+    fn recover_signer(
+        &self, 
+        transaction: &Arc<TxEnvelope>
+    ) -> Result<Address, InsertErr> {
+        transaction
+            .recover_signer()
+            .map_err(|_| InsertErr::SignatureError)
+    }
+
+    /// Processes the transaction and updates the pool state
+    fn process_transaction(
+        &mut self,
+        transaction: Arc<TxEnvelope>,
+        transaction_id: TransactionId,
+        on_chain_balance: U256,
+        on_chain_nonce: u64,
+        tx_nonce: u64,
+        signer: Address,
+        gas_limit: u64,
+        unsigned_tx: &TxEip1559,
+    ) -> InsertResult {
+        // Initialize the transaction state
+        let state = self.initialize_tx_state(
+            &transaction, 
+            tx_nonce, 
+            on_chain_nonce, 
+            signer,
+            gas_limit
+        )?;
+        let pool_tx = self.create_pool_tx(transaction.clone(), state);
+        let replaced_tx = self.insert_or_replace_tx(transaction_id, pool_tx.clone())?;
+        self.update_descendant_transactions(transaction_id, on_chain_balance, on_chain_nonce, tx_nonce, signer, pool_tx, replaced_tx)
+    }
+
+    //TODO: Correct error type in the return statement
+    fn initialize_tx_state(
+        &self, 
+        transaction: &Arc<TxEnvelope>, 
+        tx_nonce: u64, 
+        on_chain_nonce: u64, 
+        signer: Address,
+        gas_limit: u64
+    ) -> Result<TxState, InsertErr> {
+        // Ensure the transaction is valid
+        let transaction = self.ensure_valid(
+            Arc::clone(&transaction), 
+            gas_limit, 
+            &signer, 
+            on_chain_nonce, 
+            tx_nonce
+        )?;
+
+        // Initialize the transaction state
+        let mut state = TxState::default();
 
         // Tx does not exceed block gas limit, checked in ensure_valid
         state.insert(TxState::NOT_TOO_MUCH_GAS);
 
-        // TransactionId of the ancestor transaction. Will be None if the transaction nonce matches the on_chain_nonce
-        let ancestor = TransactionId::ancestor(
-            tx_nonce,
-            on_chain_nonce,
-            *signer
-        );
-
         if !transaction.is_eip4844() {
-            // Non Eip844 transactions always satisfy blob fee cap condition
             // Non-EIP4844 transaction always satisfy the blob fee cap condition
             state.insert(TxState::ENOUGH_BLOB_FEE_CAP_BLOCK);
-        } else {
-            // handle Eip844 transaction
-            // ...
         }
 
+        let ancestor = TransactionId::ancestor(tx_nonce, on_chain_nonce, signer);
         // If there's no ancestor tx then this is the next transaction to be executed
         if ancestor.is_none() {
             state.insert(TxState::NO_NONCE_GAPS);
@@ -482,22 +520,33 @@ where
             state.insert(TxState::ENOUGH_FEE_CAP_BLOCK);
         }
 
-        // placeholder for the replaced transaction, if any
-        let mut replaced_tx = None;
+        Ok(state)
+    }
 
-        let pool_tx = PoolInternalTransaction {
-            transaction: Arc::clone(&transaction),
+    fn create_pool_tx(
+        &self, 
+        transaction: Arc<TxEnvelope>, 
+        state: TxState
+    ) -> PoolInternalTransaction {
+        PoolInternalTransaction {
+            transaction,
             subpool: state.into(),
             state,
-            cumulative_cost,
-        };
+            cumulative_cost: U256::ZERO,
+        }
+    }
 
-        // Attempt to insert the transaction
+    fn insert_or_replace_tx(
+        &mut self, 
+        transaction_id: TransactionId, 
+        pool_tx: PoolInternalTransaction
+    ) -> Result<Option<(Arc<TxEnvelope>, SubPool)>, InsertErr> {
         match self.all_transactions.txs.entry(transaction_id) {
             Entry::Vacant(entry) => {
                 // Insert the transaction in both maps
                 self.all_transactions.by_hash.insert(*pool_tx.transaction.tx_hash(), pool_tx.transaction.clone());
-                entry.insert(pool_tx.into());
+                entry.insert(pool_tx);
+                Ok(None)
             }
             Entry::Occupied(mut entry) => {
                 // Transaction with the same nonce already exists: replacement candidate
@@ -505,9 +554,9 @@ where
 
                 // Get the Signed<TxEip1559> type for existing transaction
                 let signed_existing_tx_ref = match existing_transaction {
-                    TxEnvelope::Eip1559(signed_tx) => Ok(signed_tx),
-                    _ => Err(InsertErr::UnknownTransactionType)
-                }?;
+                    TxEnvelope::Eip1559(signed_tx) => signed_tx,
+                    _ => return Err(InsertErr::UnknownTransactionType),
+                };
             
                 // Get the TxEip1559 type for existing transaction
                 let unsigned_existing_tx_ref = signed_existing_tx_ref.tx();
@@ -515,24 +564,38 @@ where
                 let existing_max_fee_per_gas = unsigned_existing_tx_ref.max_fee_per_gas;
 
                 // Ensure the new transaction is not underpriced
-                if Self::is_underpriced(existing_max_fee_per_gas, unsigned_tx.max_fee_per_gas)
-                {
+                if Self::is_underpriced(existing_max_fee_per_gas, pool_tx.transaction.max_fee_per_gas()) {
                     return Err(InsertErr::Underpriced {
                         existing: *existing_transaction.tx_hash(),
-                    })
+                    });
                 }
+
                 let new_hash = *pool_tx.transaction.tx_hash();
                 let new_transaction = pool_tx.transaction.clone();
-                let replaced = entry.insert(pool_tx.into());
+                let replaced = entry.insert(pool_tx);
                 self.all_transactions.by_hash.remove(replaced.transaction.tx_hash());
                 self.all_transactions.by_hash.insert(new_hash, new_transaction);
-                // also remove the hash
-                replaced_tx = Some((replaced.transaction, replaced.subpool));
+                
+                Ok(Some((replaced.transaction, replaced.subpool)))
             }
         }
+    }
 
-        // TransactionId of the next transaction according to the on-chain nonce
-        let on_chain_id = TransactionId::new(*signer, on_chain_nonce);
+    fn update_descendant_transactions(
+        &mut self, 
+        transaction_id: TransactionId, 
+        on_chain_balance: U256, 
+        on_chain_nonce: u64, 
+        tx_nonce: u64, 
+        signer: Address, 
+        pool_tx: PoolInternalTransaction,
+        replaced_tx: Option<(Arc<TxEnvelope>, SubPool)>
+    ) -> InsertResult {
+        let mut state = TxState::default();
+        let mut cumulative_cost = U256::ZERO;
+        let mut updates = Vec::new();
+
+        let on_chain_id = TransactionId::new(signer, on_chain_nonce);
 
         {
             // get all transactions of the sender's account
@@ -541,6 +604,7 @@ where
             // Tracks the next nonce we expect if the transactions are gapless
             let mut next_nonce = on_chain_id.nonce;
 
+            let ancestor = TransactionId::ancestor(tx_nonce, on_chain_nonce, signer);
             let mut has_parked_ancestor = if ancestor.is_none() {
                 false
             } else {
@@ -615,7 +679,7 @@ where
         }
 
         Ok(InsertOk { 
-            transaction: Arc::clone(&transaction), 
+            transaction: pool_tx.transaction.clone(), 
             move_to: state.into(), 
             state, 
             replaced_tx, 
@@ -635,15 +699,22 @@ where
     signer: &Address,
     on_chain_nonce: u64,
     tx_nonce: u64
-    ) -> Result<Arc<TxEnvelope>, InsertErr> {  // Return an Arc instead of a reference
-        let user_tx_count = self.all_transactions.tx_counter.get(signer).copied().unwrap_or_default();
+    ) -> Result<Arc<TxEnvelope>, InsertErr> { 
+        // Get the number of transactions sent by the sender
+        let user_tx_count = self.all_transactions
+            .tx_counter
+            .get(signer)
+            .copied()
+            .unwrap_or_default();
 
+        // Check if the sender has exceeded the maximum number of transactions allowed
         if user_tx_count >= self.config.max_account_slots {
             return Err(InsertErr::ExceededSenderTransactionsCapacity {
                 address: signer.clone(),
             })
         }
 
+        // Check if the transaction gas limit exceeds the block gas limit
         if tx_gas_limit > self.config.block_gas_limit {
             return Err(InsertErr::TxGasLimitMoreThanAvailableBlockGas {
                 block_gas_limit: self.config.block_gas_limit,
@@ -651,6 +722,7 @@ where
             })
         }
 
+        // Check if the transaction nonce is greater than the on-chain nonce
         if on_chain_nonce > tx_nonce {
             return Err(InsertErr::InvalidTxNonce {
                 on_chain_nonce,
@@ -662,7 +734,10 @@ where
     }
 
 
-    fn is_underpriced(existing_max_fee_per_gas: u128, possible_replacement_max_fee_per_gas: u128) -> bool {
+    fn is_underpriced(
+        existing_max_fee_per_gas: u128, 
+        possible_replacement_max_fee_per_gas: u128
+    ) -> bool {
         possible_replacement_max_fee_per_gas <  existing_max_fee_per_gas
     }
 
@@ -789,6 +864,12 @@ pub(crate) struct PoolInternalTransaction {
 }
 
 impl PoolInternalTransaction {
+
+    /// Returns the transaction
+    fn transaction(&self) -> Arc<TxEnvelope> {
+        self.transaction.clone()
+    }
+
     /// Used to sum the cost of all transactions to update PoolInternalTransaction.cumulative_cost
     fn next_cumulative_cost(&self) -> U256 {
         self.cumulative_cost + &self.cost()
@@ -808,6 +889,233 @@ impl PoolInternalTransaction {
 
         U256::from(max_fee_per_gas) * U256::from(gas_limit) + value
     }
+
+    // TODO: Remove this function
+    // Attempts to insert a transaction into the pool
+    // fn insert_tx2(
+    //     &mut self,
+    //     transaction: TxEnvelope,
+    //     on_chain_balance: U256,
+    //     on_chain_nonce: u64,
+    // ) -> InsertResult {
+
+    //     let transaction = Arc::new(transaction);
+
+    //     // Get the Signed<TxEip1559> type
+    //     let signed_tx = match &*transaction {
+    //         TxEnvelope::Eip1559(signed_tx) => Ok(signed_tx),
+    //         _ => Err(InsertErr::UnknownTransactionType)
+    //     }?;
+
+    //     // Get the TxEip1559 type so we can access its properties (ie gas_limit, nonce etc)
+    //     let unsigned_tx = signed_tx.tx();
+
+    //     // Get transaction signer
+    //     let signer = &transaction
+    //         .recover_signer()
+    //         .map_err(|_| InsertErr::SignatureError)?;
+    //     // Get nonce
+    //     let tx_nonce = unsigned_tx.nonce;
+    //     // Get gas_limit
+    //     let gas_limit = unsigned_tx.gas_limit();
+
+
+    //     // Validate the transaction
+    //     // Checks the following:
+    //     // - enough transaction slots for user
+    //     // - tx_gas_limit > block_gas_limit
+    //     // - on_chain_nonce <= tx_nonce
+    //     let transaction = self.ensure_valid(Arc::clone(&transaction), gas_limit, &signer, on_chain_nonce, tx_nonce)?;
+
+
+    //     // Create TransactionId
+    //     let transaction_id = TransactionId {
+    //         sender: signer.clone(),
+    //         nonce: tx_nonce
+
+    //     };
+
+    //     let mut state = TxState::default();
+
+    //     let mut cumulative_cost = U256::ZERO;
+    //     let mut updates = Vec::new();
+
+    //     // Tx does not exceed block gas limit, checked in ensure_valid
+    //     state.insert(TxState::NOT_TOO_MUCH_GAS);
+
+    //     // TransactionId of the ancestor transaction. Will be None if the transaction nonce matches the on_chain_nonce
+    //     let ancestor = TransactionId::ancestor(
+    //         tx_nonce,
+    //         on_chain_nonce,
+    //         *signer
+    //     );
+
+    //     if !transaction.is_eip4844() {
+    //         // Non Eip844 transactions always satisfy blob fee cap condition
+    //         // Non-EIP4844 transaction always satisfy the blob fee cap condition
+    //         state.insert(TxState::ENOUGH_BLOB_FEE_CAP_BLOCK);
+    //     } else {
+    //         // handle Eip844 transaction
+    //         // ...
+    //     }
+
+    //     // If there's no ancestor tx then this is the next transaction to be executed
+    //     if ancestor.is_none() {
+    //         state.insert(TxState::NO_NONCE_GAPS);
+    //         state.insert(TxState::NO_PARKED_ANCESTORS);
+    //     }
+
+    //     // Check dynamic fee
+    //     let fee_cap = transaction.max_fee_per_gas();
+
+    //     if fee_cap < self.config.minimal_protocol_basefee as u128 {
+    //         return Err(InsertErr::FeeCapBelowMinimumProtocolFeeCap { fee_cap })
+    //     }
+    //     if fee_cap >= self.config.pending_base_fee as u128 {
+    //         state.insert(TxState::ENOUGH_FEE_CAP_BLOCK);
+    //     }
+
+    //     // placeholder for the replaced transaction, if any
+    //     let mut replaced_tx = None;
+
+    //     let pool_tx = PoolInternalTransaction {
+    //         transaction: Arc::clone(&transaction),
+    //         subpool: state.into(),
+    //         state,
+    //         cumulative_cost,
+    //     };
+
+    //     // Attempt to insert the transaction
+    //     match self.all_transactions.txs.entry(transaction_id) {
+            
+    //         Entry::Vacant(entry) => {
+    //             // Insert the transaction in both maps
+    //             self.all_transactions.by_hash.insert(*pool_tx.transaction.tx_hash(), pool_tx.transaction.clone());
+    //             entry.insert(pool_tx.into());
+    //         }
+    //         Entry::Occupied(mut entry) => {
+    //             // Transaction with the same nonce already exists: replacement candidate
+    //             let existing_transaction = entry.get().transaction.as_ref();
+
+    //             // Get the Signed<TxEip1559> type for existing transaction
+    //             let signed_existing_tx_ref = match existing_transaction {
+    //                 TxEnvelope::Eip1559(signed_tx) => Ok(signed_tx),
+    //                 _ => Err(InsertErr::UnknownTransactionType)
+    //             }?;
+            
+    //             // Get the TxEip1559 type for existing transaction
+    //             let unsigned_existing_tx_ref = signed_existing_tx_ref.tx();
+
+    //             let existing_max_fee_per_gas = unsigned_existing_tx_ref.max_fee_per_gas;
+
+    //             // Ensure the new transaction is not underpriced
+    //             if Self::is_underpriced(existing_max_fee_per_gas, unsigned_tx.max_fee_per_gas)
+    //             {
+    //                 return Err(InsertErr::Underpriced {
+    //                     existing: *existing_transaction.tx_hash(),
+    //                 })
+    //             }
+    //             let new_hash = *pool_tx.transaction.tx_hash();
+    //             let new_transaction = pool_tx.transaction.clone();
+    //             let replaced = entry.insert(pool_tx.into());
+    //             self.all_transactions.by_hash.remove(replaced.transaction.tx_hash());
+    //             self.all_transactions.by_hash.insert(new_hash, new_transaction);
+    //             // also remove the hash
+    //             replaced_tx = Some((replaced.transaction, replaced.subpool));
+    //         }
+    //     }
+
+    //     // TransactionId of the next transaction according to the on-chain nonce
+    //     let on_chain_id = TransactionId::new(*signer, on_chain_nonce);
+
+    //     {
+    //         // get all transactions of the sender's account
+    //         let mut descendants = self.all_transactions.descendant_txs_mut(&on_chain_id).peekable();
+
+    //         // Tracks the next nonce we expect if the transactions are gapless
+    //         let mut next_nonce = on_chain_id.nonce;
+
+    //         let mut has_parked_ancestor = if ancestor.is_none() {
+    //             false
+    //         } else {
+    //             let (id, tx) = descendants.peek().expect("includes >= 1");
+    //             if id.nonce < tx_nonce {
+    //                 // tx here is the next descendant of the current tx.
+    //                 !tx.state.is_pending()
+    //             } else {
+    //                 true
+    //             }
+    //         };
+
+    //         // Traverse all transactions of the sender and update existing transactions
+    //         for (id, tx) in descendants {
+    //             let current_pool = tx.subpool;
+
+    //             // If there's a nonce gap, we can shortcircuit
+    //             if next_nonce != id.nonce {
+    //                 break
+    //             }
+
+    //             // close the nonce gap
+    //             tx.state.insert(TxState::NO_NONCE_GAPS);
+
+    //             // set cumulative cost
+    //             tx.cumulative_cost = cumulative_cost;
+
+    //             // Update for next transaction
+    //             cumulative_cost = tx.next_cumulative_cost();
+
+    //             if cumulative_cost > on_chain_balance {
+    //                 // sender lacks sufficient funds to pay for this transaction
+    //                 tx.state.remove(TxState::ENOUGH_BALANCE);
+    //             } else {
+    //                 tx.state.insert(TxState::ENOUGH_BALANCE);
+    //             }
+
+    //             // Update ancestor condition.
+    //             if has_parked_ancestor {
+    //                 tx.state.remove(TxState::NO_PARKED_ANCESTORS);
+    //             } else {
+    //                 tx.state.insert(TxState::NO_PARKED_ANCESTORS);
+    //             }
+    //             has_parked_ancestor = !tx.state.is_pending();
+
+    //             // update the pool based on the state
+    //             tx.subpool = tx.state.into();
+
+    //             if transaction_id.eq(id) {
+    //                 // if it is the new transaction, track its updated state
+    //                 state = tx.state;
+    //             } else {
+    //                 // check if anything changed
+    //                 if current_pool != tx.subpool {
+    //                     updates.push(PoolUpdate {
+    //                         id: *id,
+    //                         hash: *tx.transaction.tx_hash(),
+    //                         current: current_pool,
+    //                         destination: Destination::Pool(tx.subpool),
+    //                     })
+    //                 }
+    //             }
+
+    //             // increment for next iteration
+    //             next_nonce = id.next_nonce();
+    //         }
+    //     }
+
+    //     // If this wasn't a replacement transaction we need to update the counter.
+    //     if replaced_tx.is_none() {
+    //         self.all_transactions.tx_inc(transaction_id.sender);
+    //     }
+
+    //     Ok(InsertOk { 
+    //         transaction: Arc::clone(&transaction), 
+    //         move_to: state.into(), 
+    //         state, 
+    //         replaced_tx, 
+    //         updates 
+    //     })
+    // }
 }
 
 

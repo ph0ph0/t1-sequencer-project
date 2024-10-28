@@ -73,6 +73,24 @@ pub(crate) struct PoolUpdate {
     pub(crate) destination: Destination,
 }
 
+impl PoolUpdate {
+    /// Creates a new `PoolUpdate` instance.
+    pub(crate) fn new(
+        id: TransactionId,
+        hash: TxHash,
+        current: SubPool,
+        destination: Destination
+    ) -> Self {
+        Self {
+            id,
+            hash,
+            current,
+            destination,
+        }
+    }
+}
+
+
 /// Where to move an existing transaction.
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub(crate) enum Destination {
