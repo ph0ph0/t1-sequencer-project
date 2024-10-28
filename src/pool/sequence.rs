@@ -134,7 +134,7 @@ where
             if (self.predicate)(&best) {
                 return Some(best);
             }
-            self.transaction_sequence.mark_invalid(&best.transaction());
+            self.transaction_sequence.mark_invalid(best.transaction());
         }
     }
 }

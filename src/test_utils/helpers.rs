@@ -150,14 +150,12 @@ pub fn create_pool_internal_tx(tx: Arc<TxEnvelope>) -> PoolInternalTransaction {
 
     assert_eq!(subpool, SubPool::Pending);
 
-    let pool_internal_tx = PoolInternalTransaction {
+    PoolInternalTransaction {
         transaction: Arc::clone(&tx),
-        subpool: subpool,
-        state: state,
+        subpool,
+        state,
         cumulative_cost: U256::ZERO,
-    };
-
-    pool_internal_tx
+    }
 }
 #[allow(dead_code)]
 pub fn create_pool_internal_tx_with_cumulative_cost(
@@ -178,12 +176,10 @@ pub fn create_pool_internal_tx_with_cumulative_cost(
 
     assert_eq!(subpool, SubPool::Pending);
 
-    let pool_internal_tx = PoolInternalTransaction {
+    PoolInternalTransaction {
         transaction: Arc::clone(&tx),
         subpool,
         state,
         cumulative_cost,
-    };
-
-    pool_internal_tx
+    }
 }

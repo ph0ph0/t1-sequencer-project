@@ -201,11 +201,11 @@ where
         on_chain_balance: U256,
         on_chain_nonce: u64,
     ) -> PoolResult<AddedTransaction> {
-        let tx_hash = tx.tx_hash().clone();
+        let tx_hash = *tx.tx_hash();
         // Check to see if the new tx already exists in the pool
         if self.contains(&tx_hash) {
             return Err(PoolError::new(
-                tx_hash.clone(),
+                tx_hash,
                 PoolErrorKind::AlreadyImported,
             ));
         }
@@ -244,59 +244,59 @@ where
                     }
                 };
 
-                return Ok(res);
+                Ok(res)
             }
             Err(err) => match err {
                 InsertErr::UnknownTransactionType => {
-                    return Err(PoolError::new(
-                        tx_hash.clone(),
+                    Err(PoolError::new(
+                        tx_hash,
                         PoolErrorKind::UnknownTransactionType,
-                    ));
+                    ))
                 }
                 InsertErr::InvalidTxNonce {
                     on_chain_nonce,
                     tx_nonce,
                 } => {
-                    return Err(PoolError::new(
-                        tx_hash.clone(),
+                    Err(PoolError::new(
+                        tx_hash,
                         PoolErrorKind::InvalidTxNonce(on_chain_nonce, tx_nonce),
-                    ));
+                    ))
                 }
                 InsertErr::SignatureError => {
-                    return Err(PoolError::new(
-                        tx_hash.clone(),
+                    Err(PoolError::new(
+                        tx_hash,
                         PoolErrorKind::SignatureError,
-                    ));
+                    ))
                 }
                 InsertErr::Underpriced { existing } => {
-                    return Err(PoolError::new(
-                        tx_hash.clone(),
+                    Err(PoolError::new(
+                        tx_hash,
                         PoolErrorKind::ReplacementUnderpriced(existing),
-                    ));
+                    ))
                 }
                 InsertErr::FeeCapBelowMinimumProtocolFeeCap { fee_cap } => {
-                    return Err(PoolError::new(
-                        tx_hash.clone(),
+                    Err(PoolError::new(
+                        tx_hash,
                         PoolErrorKind::FeeCapBelowMinimumProtocolFeeCap(fee_cap),
-                    ));
+                    ))
                 }
                 InsertErr::ExceededSenderTransactionsCapacity { address } => {
-                    return Err(PoolError::new(
-                        tx_hash.clone(),
+                    Err(PoolError::new(
+                        tx_hash,
                         PoolErrorKind::SpammerExceededCapacity(address),
-                    ));
+                    ))
                 }
                 InsertErr::TxGasLimitMoreThanAvailableBlockGas {
                     block_gas_limit,
                     tx_gas_limit,
                 } => {
-                    return Err(PoolError::new(
-                        tx_hash.clone(),
+                    Err(PoolError::new(
+                        tx_hash,
                         PoolErrorKind::TxGasLimitMoreThanAvailableBlockGas(
                             block_gas_limit,
                             tx_gas_limit,
                         ),
-                    ));
+                    ))
                 }
             },
         }
@@ -423,7 +423,7 @@ where
         let gas_limit = unsigned_tx.gas_limit();
 
         let transaction_id = TransactionId {
-            sender: signer.clone(),
+            sender: signer,
             nonce: tx_nonce,
         };
 
@@ -493,7 +493,7 @@ where
     ) -> Result<TxState, InsertErr> {
         // Ensure the transaction is valid
         let transaction = self.ensure_valid(
-            Arc::clone(&transaction),
+            Arc::clone(transaction),
             gas_limit,
             &signer,
             on_chain_nonce,
@@ -731,7 +731,7 @@ where
         // Check if the sender has exceeded the maximum number of transactions allowed
         if user_tx_count >= self.config.max_account_slots {
             return Err(InsertErr::ExceededSenderTransactionsCapacity {
-                address: signer.clone(),
+                address: *signer,
             });
         }
 
@@ -785,12 +785,10 @@ where
         pool: SubPool,
         tx: &TransactionId,
     ) -> Option<Arc<TxEnvelope>> {
-        let tx = match pool {
+        match pool {
             SubPool::Queued => self.queued_transactions.remove_transaction(tx),
             SubPool::Pending => self.pending_transactions.remove_transaction(tx),
-        };
-
-        tx
+        }
     }
 
     /// Inserts the transaction into the given sub-pool.
@@ -891,7 +889,7 @@ impl PoolInternalTransaction {
 
     /// Used to sum the cost of all transactions to update PoolInternalTransaction.cumulative_cost
     fn next_cumulative_cost(&self) -> U256 {
-        self.cumulative_cost + &self.cost()
+        self.cumulative_cost + self.cost()
     }
 
     /// Returns the cost that this transaction is allowed to consume:

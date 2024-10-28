@@ -36,7 +36,7 @@ pub struct AllTransactions {
 impl AllTransactions {
     /// Creates new instance
     #[allow(dead_code)]
-    pub(crate) fn new(&self) -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             txs: BTreeMap::new(),
             by_hash: HashMap::new(),

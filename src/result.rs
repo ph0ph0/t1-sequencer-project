@@ -42,21 +42,12 @@ pub struct AddedPendingTransaction {
 }
 
 /// Tracks the result after updating the pool
-#[derive(Debug, Eq, PartialEq, Clone)]
+#[derive(Debug, Eq, PartialEq, Clone, Default)]
 pub(crate) struct UpdateOutcome {
     /// transactions promoted to the pending pool
     pub(crate) promoted: Vec<Arc<TxEnvelope>>,
     /// transaction that failed and were discarded
     pub(crate) discarded: Vec<Arc<TxEnvelope>>,
-}
-
-impl Default for UpdateOutcome {
-    fn default() -> Self {
-        Self {
-            promoted: vec![],
-            discarded: vec![],
-        }
-    }
 }
 
 // A change of the transaction's location

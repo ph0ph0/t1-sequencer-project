@@ -101,7 +101,7 @@ impl Debug for QueuedOrderedTransaction {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct QueuedPool {
     /// Keeps track of the last transaction submitted to the pool
     current_submission_id: u64,
@@ -184,7 +184,7 @@ impl QueuedPool {
         let tx = self.by_id.remove(id)?;
         self.best.remove(&tx);
         self.remove_sender_count(tx.transaction.0.recover_signer().unwrap());
-        Some(tx.transaction.0.into())
+        Some(tx.transaction.0)
     }
 
     /// Removes a sender count from the pool.
@@ -204,17 +204,6 @@ impl QueuedPool {
                 unreachable!("sender count not found {:?}", sender);
             }
         };
-    }
-}
-
-impl Default for QueuedPool {
-    fn default() -> Self {
-        Self {
-            current_submission_id: 0,
-            by_id: BTreeMap::default(),
-            best: BTreeSet::default(),
-            sender_transaction_count: HashMap::default(),
-        }
     }
 }
 
