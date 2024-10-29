@@ -19,7 +19,7 @@ use alloy::{
 use crate::{
     identifiers::TransactionId,
     ordering::{Priority, TransactionOrdering},
-    pool::sequence::TransactionSequence,
+    pool::sequence::{TransactionSequence, TransactionSequenceFilter},
 };
 
 /// A transaction that is pending inclusion in a block
@@ -299,6 +299,15 @@ where
             independent: self.independent_transactions.clone(),
             invalid: Default::default(),
         }
+    }
+
+    /// Returns the filtered transaction sequence iterator
+    pub fn filter_sequence(
+        &self,
+        predicate: Box<dyn FnMut(&<TransactionSequence<O> as Iterator>::Item) -> bool>,
+    ) -> TransactionSequenceFilter<O> {
+        let transaction_sequence = self.transaction_sequence();
+        TransactionSequenceFilter::new(transaction_sequence, predicate)
     }
 }
 

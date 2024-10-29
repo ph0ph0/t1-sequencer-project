@@ -112,22 +112,22 @@ impl<O: TransactionOrdering> Iterator for TransactionSequence<O> {
 
 /// A[`TransactionSequence`] implementation that filters the
 /// transactions of iter with a predicate.
-#[derive(Debug, Clone)]
-pub struct TransactionSequenceFilter<O, P>
+pub struct TransactionSequenceFilter<O>
 where
     O: TransactionOrdering,
 {
     pub(crate) transaction_sequence: TransactionSequence<O>,
-    pub(crate) predicate: P,
+    pub(crate) predicate: Box<dyn FnMut(&<TransactionSequence<O> as Iterator>::Item) -> bool>,
 }
 
-impl<O, P> TransactionSequenceFilter<O, P>
+impl<O> TransactionSequenceFilter<O>
 where
     O: TransactionOrdering,
 {
-    /// Create a new [`TransactionSequenceFilter`] with the given predicate.
-    #[allow(dead_code)]
-    pub(crate) const fn new(transaction_sequence: TransactionSequence<O>, predicate: P) -> Self {
+    pub(crate) const fn new(
+        transaction_sequence: TransactionSequence<O>,
+        predicate: Box<dyn FnMut(&<TransactionSequence<O> as Iterator>::Item) -> bool>,
+    ) -> Self {
         Self {
             transaction_sequence,
             predicate,
@@ -135,14 +135,12 @@ where
     }
 }
 
-impl<O, P> Iterator for TransactionSequenceFilter<O, P>
+impl<O> Iterator for TransactionSequenceFilter<O>
 where
     O: TransactionOrdering,
-    P: FnMut(&<TransactionSequence<O> as Iterator>::Item) -> bool,
 {
     type Item = <TransactionSequence<O> as Iterator>::Item;
 
-    /// Filters according to the predicate and returns the next transaction in the sequence, which can be executed against the current state.
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             let best = self.transaction_sequence.next()?;
@@ -153,6 +151,7 @@ where
         }
     }
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -431,7 +430,7 @@ mod tests {
             tx.transaction().nonce() % 2 == 0
         };
 
-        let mut filter = TransactionSequenceFilter::new(sequence, predicate);
+        let mut filter = TransactionSequenceFilter::new(sequence, Box::new(predicate));
 
         // First transaction should be returned (nonce 0)
         let next_tx = filter.next().unwrap();

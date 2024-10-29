@@ -35,7 +35,7 @@ use crate::{
         all::AllTransactions,
         pending::PendingPool,
         queued::QueuedPool,
-        sequence::TransactionSequence,
+        sequence::{TransactionSequence, TransactionSequenceFilter},
         state::{SubPool, TxState},
     },
     result::{
@@ -315,6 +315,111 @@ where
     /// ```
     pub fn transaction_sequence(&self) -> TransactionSequence<O> {
         self.pending_transactions.transaction_sequence()
+    }
+
+    /// Returns a filtered transaction sequence iterator that only yields transactions matching the given predicate.
+    ///
+    /// The predicate is a function that takes a reference to a [`TxEnvelope`] and returns a boolean.
+    /// Only transactions for which the predicate returns `true` will be included in the sequence.
+    ///
+    /// # Arguments
+    ///
+    /// * `predicate` - A function that takes a reference to a [`TxEnvelope`] and returns `bool`
+    ///
+    /// # Returns
+    ///
+    /// A [`TransactionSequenceFilter`] that yields only transactions matching the predicate
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use alloy::{
+    ///     consensus::{TxEnvelope, Transaction},
+    ///     network::{Ethereum, EthereumWallet, NetworkWallet},
+    ///     primitives::{Address, U256, TxKind},
+    ///     rpc::types::TransactionRequest,
+    ///     signers::{
+    ///         k256::Secp256k1,
+    ///         local::LocalSigner,
+    ///         utils::secret_key_to_address,
+    ///     },
+    /// };
+    /// use ecdsa::SigningKey;
+    /// use rand_core::OsRng;
+    /// use std::sync::Arc;
+    ///
+    /// use t1_sequencer_project::{Pool, PoolConfig, CoinbaseTipOrdering, PendingTransaction};
+    ///
+    /// #[tokio::main]
+    /// async fn main() {
+    ///     // Create the pool config
+    ///     let config = PoolConfig {
+    ///         max_account_slots: 16,
+    ///         block_gas_limit: 30_000_000,
+    ///         minimal_protocol_basefee: 1,
+    ///         pending_base_fee: 1,
+    ///     };
+    ///     
+    ///     // Create the ordering strategy
+    ///     let ordering: CoinbaseTipOrdering<TxEnvelope> = CoinbaseTipOrdering::default();
+    ///
+    ///     // Create the pool
+    ///     let mut pool = Pool::new(config, ordering);
+    ///
+    ///     // Create the sender
+    ///     let private_key = SigningKey::random(&mut OsRng);
+    ///     let sender = secret_key_to_address(&private_key);
+    ///
+    ///     // Create the transaction request
+    ///     let req = TransactionRequest {
+    ///         from: None,
+    ///         to: Some(TxKind::Call(Address::random())),
+    ///         max_fee_per_gas: Some(20),
+    ///         max_priority_fee_per_gas: Some(10),
+    ///         gas: Some(100_000),
+    ///         value: Some(U256::from(1)),
+    ///         nonce: Some(0),
+    ///         chain_id: Some(1),
+    ///         ..Default::default()
+    ///     };
+    ///
+    ///     // Build the typed transaction
+    ///     let typed_tx = req.build_typed_tx().expect("Failed to build typed tx");
+    ///
+    ///     // Create the local signer
+    ///     let local_signer: LocalSigner<SigningKey<Secp256k1>> = LocalSigner::from_signing_key(private_key);
+    ///     let wallet = EthereumWallet::new(local_signer);
+    ///
+    ///     // Sign the transaction
+    ///     let tx_env = <EthereumWallet as NetworkWallet<Ethereum>>::sign_transaction_from(&wallet, sender, typed_tx).await.unwrap();
+    ///
+    ///     // Create the on-chain balance and nonce
+    ///     let on_chain_balance = U256::from(1_000_000_000);
+    ///     let on_chain_nonce = 0;
+    ///
+    ///     // Add the transaction to the pool
+    ///     let result = pool.add_transaction(tx_env, on_chain_balance, on_chain_nonce);
+    ///
+    ///     // Get the transaction sequence
+    ///     // Create a filter that only accepts transactions with even nonces
+    ///    let predicate = move |tx: &Arc<PendingTransaction<CoinbaseTipOrdering<TxEnvelope>>>| {
+    ///        tx.transaction().nonce() % 2 == 0
+    ///    };
+    ///
+    ///     // Filter for transactions with even nonces
+    ///     let mut sequence = pool.filter_sequence(Box::new(predicate));
+    ///
+    ///     // First transaction should be returned (nonce 0)
+    ///     let next_tx = sequence.next().unwrap();
+    ///     assert_eq!(next_tx.transaction().nonce(), 0);
+    /// }
+    /// ```
+    pub fn filter_sequence(
+        &self,
+        predicate: Box<dyn FnMut(&<TransactionSequence<O> as Iterator>::Item) -> bool>,
+    ) -> TransactionSequenceFilter<O> {
+        let boxed_predicate = Box::new(predicate);
+        self.pending_transactions.filter_sequence(boxed_predicate)
     }
 
     /// Checks if the given tx_hash is present in the all_transactions pool
@@ -903,7 +1008,8 @@ mod tests {
     use alloy::primitives::U256;
     use crate::ordering::CoinbaseTipOrdering;
     use crate::pool::PoolConfig;
-    use crate::result::{AddedTransaction, PoolErrorKind, };
+    use crate::result::{AddedTransaction, PoolErrorKind};
+    use crate::pool::pending::PendingTransaction;
     use crate::test_utils::helpers::{
         create_default_tx_and_sender, create_default_tx_envelope_and_sender,
         create_pool_internal_tx, create_pool_internal_tx_with_cumulative_cost, create_sender,
@@ -1687,6 +1793,99 @@ mod tests {
         assert_eq!(
             sequence.next().unwrap().transaction().tx_hash(),
             tx2_3.tx_hash()
+        );
+        assert!(sequence.next().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_filter_sequence() {
+        let mut pool = create_test_pool();
+        let (sender, private_key) = create_sender();
+        let on_chain_balance = U256::from(1_000_000_000);
+        let on_chain_nonce = 0;
+
+        // Create transactions with different nonces and priority fees
+        let tx1 = create_tx_envelope_with_sender(
+            private_key.clone(),
+            sender,
+            20,
+            10,
+            100_000,
+            U256::ZERO,
+            2,
+        )
+        .await;
+        let tx2 = create_tx_envelope_with_sender(
+            private_key.clone(),
+            sender,
+            25,
+            15,
+            100_000,
+            U256::ZERO,
+            1,
+        )
+        .await;
+        let tx3 = create_tx_envelope_with_sender(
+            private_key.clone(),
+            sender,
+            15,
+            5,
+            100_000,
+            U256::ZERO,
+            0,
+        )
+        .await;
+        let tx4 = create_tx_envelope_with_sender(
+            private_key.clone(),
+            sender,
+            30,
+            20,
+            100_000,
+            U256::ZERO,
+            3,
+        )
+        .await;
+
+        // Add transactions to the pool in a mixed order
+        pool.add_transaction(tx2.clone(), on_chain_balance, on_chain_nonce)
+            .unwrap();
+        pool.add_transaction(tx4.clone(), on_chain_balance, on_chain_nonce)
+            .unwrap();
+        pool.add_transaction(tx1.clone(), on_chain_balance, on_chain_nonce)
+            .unwrap();
+        pool.add_transaction(tx3.clone(), on_chain_balance, on_chain_nonce)
+            .unwrap();
+
+        // Create a filter that only accepts transactions with even nonces
+        let predicate = |tx: &Arc<PendingTransaction<CoinbaseTipOrdering<TxEnvelope>>>| {
+            tx.transaction().nonce() % 2 == 0
+        };
+
+        // Filter for transactions with even nonces
+        let mut sequence = pool.filter_sequence(Box::new(predicate));
+
+        // Should only get transactions with nonce % 2 == 0
+        assert_eq!(
+            sequence.next().unwrap().transaction().tx_hash(),
+            tx3.tx_hash()
+        );
+        assert_eq!(
+            sequence.next().unwrap().transaction().tx_hash(),
+            tx1.tx_hash()
+        );
+        assert!(sequence.next().is_none());
+
+        // Filter for specific transaction hash
+        let target_hash = *tx3.tx_hash();
+        let predicate = move |tx: &Arc<PendingTransaction<CoinbaseTipOrdering<TxEnvelope>>>| {
+            *tx.transaction().tx_hash() == target_hash
+        };
+        let mut sequence = pool.filter_sequence(Box::new(predicate));
+
+        // Should only get the specific transaction
+        assert_eq!(
+            sequence.next().unwrap().transaction().tx_hash(),
+            tx3.tx_hash()
         );
         assert!(sequence.next().is_none());
     }
