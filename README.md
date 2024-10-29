@@ -2,30 +2,29 @@
 
 ## Overview
 
-This project implements a transaction pool/sequencer for t1 protocol. Currently, it only sequences Eip1559 transactions. However, it has been designed to be extensible to other transaction types in the future, as it uses [Alloy's](https://docs.rs/alloy/0.5.2/alloy/consensus/enum.TxEnvelope.html) `TxEnvelope` type.
+This project implements a transaction pool/sequencer for t1 protocol. Currently, it sequences only EIP-1559 transactions. However, it has been designed to be extensible to other transaction types in the future, as it uses [Alloy's](https://docs.rs/alloy/0.5.2/alloy/consensus/enum.TxEnvelope.html) `TxEnvelope` type.
 
-The `Pool` type is the main component of the system. It manages the lifecycle and organization of transactions.
+The main component, `Pool`, manages the lifecycle and organization of transactions within the system.
 
 The `TransactionSequence` type is a helper type that provides an iterator over the optimal set of transactions ready for execution, considering their priority fees and maintaining proper nonce ordering for each sender.
 
 ### Key Features
 
-- **Flexible Transaction Ordering**: Implements customizable transaction ordering strategies, with a default focus on maximizing miner revenue through a priority fee ordering system.
+- **Flexible Transaction Ordering**: Implements customizable transaction ordering strategies, with a default focus on maximizing revenue through a priority fee ordering system.
 - **Nonce-based Sequencing**: Ensures transactions from the same sender are processed in the correct order based on their nonces, irrespective of the transaction ordering strategy.
-- **Filterable Transaction Sequence**: The transaction sequence can be filtered according to arbitrary predicates. (eg sender address, minimum priority fee, etc).
+- **Filterable Transaction Sequence**: The transaction sequence can be filtered according to arbitrary predicates (e.g. sender address, minimum priority fee, etc).
 - **DDoS Protection**: The pool is designed to provide some protection against DDoS attacks by limiting the number of transactions from any single sender. The limit is configurable.
 - **Pending and Queued Pools**: Separates transactions into pending (ready for inclusion) and queued (waiting for prerequisites) pools for better organization and processing.
 - **Dynamic Pool Management**: Automatically moves transactions between pending and queued states based on their readiness for inclusion.
 - **Flexible Configuration**: Allows for easy adjustment of pool behavior through the `PoolConfig` settings.
-- **Transaction Validation**: Includes basic validation checks to ensure only valid transactions enter the pool.
-- **Configurable Limits**: Allows setting of various limits such as maximum account slots and block gas limit to prevent spam and ensure efficient resource usage.
-- **Dynamic Fee Handling**: Supports EIP-1559 style dynamic fee transactions, considering base fee and priority fee for transaction ordering.
-- **Concurrency Support**: Designed with thread-safety in mind, allowing for concurrent access and modifications.
+- **Transaction Validation**: Includes validation checks to ensure only valid transactions enter the pool.
+- **Dynamic Fee Handling**: Supports EIP-1559 dynamic fee transactions, taking priority fee into account for transaction ordering.
+- **Concurrency Support**: Designed with thread-safety in mind, allowing for concurrent access.
 - **Testing**: The project includes a test suite to ensure reliability and correctness.
 
 ## Running Tests
 
-To run the test suite for this project, use:
+To run all tests and ensure everything works as expected, use:
 
 ```bash
 cargo test
@@ -33,7 +32,7 @@ cargo test
 
 ## Opening the Docs
 
-To open the docs for this project, use:
+To view the project documentation in your browser, use:
 
 ```bash
 cargo doc --open
@@ -43,9 +42,9 @@ cargo doc --open
 
 The `Pool` struct, defined in `pool/mod.rs`, serves as the central component of the transaction sequencing system. It orchestrates the lifecycle and organization of transactions within the pool.
 
-New transactions are introduced to the pool through the `add_transaction` method. This method performs necessary validations before assigning the transaction to the appropriate subpool.
+New transactions are introduced to the pool through the `add_transaction` method. This method performs necessary validations before assigning the transaction to the appropriate subpool. It also reorganises transactions across pools where necessary.
 
-To facilitate transaction execution, the `Pool` struct offers a `transaction_sequence` method. This method returns an iterator that yields the most optimal set of transactions. These transactions are ordered based on their priority fees (or any other transaction ordering strategy) while maintaining the correct nonce sequence for each sender. The returned transactions are guaranteed to be executable against the current **chain** state, ensuring no nonce gaps and sufficient on-chain balance.
+To facilitate transaction execution, the `Pool` struct offers a `transaction_sequence` method. This method returns an iterator that yields the most optimal set of transactions. These transactions are ordered based on their priority fees (or another user-defined transaction ordering strategy) while maintaining the correct nonce sequence for each sender. The returned transactions are guaranteed to be executable against the current chain state, ensuring no nonce gaps and sufficient on-chain balance. Further, the sequence can be filtered according to arbitrary predicates (eg sender address, minimum priority fee, etc)
 
 ### Structure
 
@@ -67,6 +66,8 @@ The `Pool` type provides methods for managing transactions:
    - `transaction_sequence`: Provides an iterator over the optimal set of transactions ready for execution, considering their priority fees and maintaining proper nonce ordering for each sender.
 
 ## Usage
+
+Below is an example of how to use the `Pool` struct.
 
 ```rust
 use alloy::{
@@ -155,7 +156,7 @@ The pool can be configured with the following parameters:
 
 - **Additional Transaction Types**:
   - Add support for partially encrypted user intents.
-  - Alternatively, add support for more transaction types, such as Eip2930 and Eip4844 transactions.
+  - Alternatively, add support for more transaction types, such as EIP-2930 and EIP-4844 transactions.
 - **Enhanced Mempool Management**:
    - Implement more sophisticated eviction policies for when the pool reaches capacity.
    - Add extra support for transaction replacement.
@@ -165,7 +166,7 @@ The pool can be configured with the following parameters:
   - Add pool metrics data structures and monitoring functionality.
 - **New Transaction Notification System**:
   - Implement a notification system to update the transaction sequence when new transactions are added.
-- **Fine Tuned DDoS Protection**:
+- **Fine-Tuned DDoS Protection**:
   - Add a total transaction limit to the pool to provide a hard limit on the number of transactions that can be added to the pool.
   - Implement transaction limits on a per-pool basis to give greater control over pool behavior.
 - **Network Layer Integration**:
