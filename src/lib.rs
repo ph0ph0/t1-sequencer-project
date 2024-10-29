@@ -1,7 +1,7 @@
 #![doc = include_str!("../README.md")]
 
 pub use ordering::{CoinbaseTipOrdering, TransactionOrdering};
-pub use pool::{Pool, PoolConfig, pending::PendingTransaction};
+pub use pool::{pending::PendingTransaction, Pool, PoolConfig};
 
 pub mod identifiers;
 pub mod ordering;

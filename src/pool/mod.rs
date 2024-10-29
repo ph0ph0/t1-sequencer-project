@@ -202,7 +202,7 @@ where
         on_chain_nonce: u64,
     ) -> PoolResult<AddedTransaction> {
         let tx_hash = *tx.tx_hash();
-        
+
         // Early return if transaction exists
         if self.contains(&tx_hash) {
             return Err(PoolError::new(tx_hash, PoolErrorKind::AlreadyImported));
@@ -755,9 +755,7 @@ where
 
         // Check if the sender has exceeded the maximum number of transactions allowed
         if user_tx_count >= self.config.max_account_slots {
-            return Err(InsertErr::ExceededSenderTransactionsCapacity {
-                address: *signer,
-            });
+            return Err(InsertErr::ExceededSenderTransactionsCapacity { address: *signer });
         }
 
         // Check if the transaction gas limit exceeds the block gas limit
@@ -890,17 +888,22 @@ where
     fn convert_insert_error(&self, err: InsertErr, tx_hash: B256) -> PoolError {
         let kind = match err {
             InsertErr::UnknownTransactionType => PoolErrorKind::UnknownTransactionType,
-            InsertErr::InvalidTxNonce { on_chain_nonce, tx_nonce } => 
-                PoolErrorKind::InvalidTxNonce(on_chain_nonce, tx_nonce),
+            InsertErr::InvalidTxNonce {
+                on_chain_nonce,
+                tx_nonce,
+            } => PoolErrorKind::InvalidTxNonce(on_chain_nonce, tx_nonce),
             InsertErr::SignatureError => PoolErrorKind::SignatureError,
-            InsertErr::Underpriced { existing } => 
-                PoolErrorKind::ReplacementUnderpriced(existing),
-            InsertErr::FeeCapBelowMinimumProtocolFeeCap { fee_cap } => 
-                PoolErrorKind::FeeCapBelowMinimumProtocolFeeCap(fee_cap),
-            InsertErr::ExceededSenderTransactionsCapacity { address } => 
-                PoolErrorKind::SpammerExceededCapacity(address),
-            InsertErr::TxGasLimitMoreThanAvailableBlockGas { block_gas_limit, tx_gas_limit } => 
-                PoolErrorKind::TxGasLimitMoreThanAvailableBlockGas(block_gas_limit, tx_gas_limit),
+            InsertErr::Underpriced { existing } => PoolErrorKind::ReplacementUnderpriced(existing),
+            InsertErr::FeeCapBelowMinimumProtocolFeeCap { fee_cap } => {
+                PoolErrorKind::FeeCapBelowMinimumProtocolFeeCap(fee_cap)
+            }
+            InsertErr::ExceededSenderTransactionsCapacity { address } => {
+                PoolErrorKind::SpammerExceededCapacity(address)
+            }
+            InsertErr::TxGasLimitMoreThanAvailableBlockGas {
+                block_gas_limit,
+                tx_gas_limit,
+            } => PoolErrorKind::TxGasLimitMoreThanAvailableBlockGas(block_gas_limit, tx_gas_limit),
         };
         PoolError::new(tx_hash, kind)
     }
@@ -916,10 +919,13 @@ where
         } = insert_ok;
 
         self.add_new_transaction(transaction.clone(), replaced_tx.clone(), move_to);
-        let UpdateOutcome { promoted, discarded } = self.process_updates(updates);
-        
+        let UpdateOutcome {
+            promoted,
+            discarded,
+        } = self.process_updates(updates);
+
         let replaced = replaced_tx.map(|(tx, _)| tx);
-        
+
         Ok(if move_to.is_pending() {
             AddedTransaction::Pending(AddedPendingTransaction {
                 transaction,
@@ -938,7 +944,11 @@ where
 
     /// Returns the number of transactions in the pool for a given sender
     pub fn get_sender_transaction_count(&self, sender: &Address) -> usize {
-        self.all_transactions.tx_counter.get(sender).copied().unwrap_or_default()
+        self.all_transactions
+            .tx_counter
+            .get(sender)
+            .copied()
+            .unwrap_or_default()
     }
 
     /// Returns true if the sender has reached their transaction limit
@@ -1005,16 +1015,16 @@ impl PoolInternalTransaction {
 mod tests {
 
     use super::*;
-    use alloy::primitives::U256;
     use crate::ordering::CoinbaseTipOrdering;
+    use crate::pool::pending::PendingTransaction;
     use crate::pool::PoolConfig;
     use crate::result::{AddedTransaction, PoolErrorKind};
-    use crate::pool::pending::PendingTransaction;
     use crate::test_utils::helpers::{
         create_default_tx_and_sender, create_default_tx_envelope_and_sender,
         create_pool_internal_tx, create_pool_internal_tx_with_cumulative_cost, create_sender,
-         create_tx_and_sender, create_tx_envelope_with_sender,
+        create_tx_and_sender, create_tx_envelope_with_sender,
     };
+    use alloy::primitives::U256;
 
     fn create_test_pool() -> Pool<CoinbaseTipOrdering<TxEnvelope>> {
         create_test_pool_with_config(PoolConfig {
