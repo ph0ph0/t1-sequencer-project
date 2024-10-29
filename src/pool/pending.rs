@@ -22,6 +22,7 @@ use crate::{
     pool::sequence::TransactionSequence,
 };
 
+/// A transaction that is pending inclusion in a block
 pub struct PendingTransaction<O>
 where
     O: TransactionOrdering,
@@ -137,6 +138,22 @@ where
     }
 }
 
+/// A pool that manages pending transactions.
+///
+/// The `PendingPool` maintains multiple data structures to efficiently track and order transactions:
+///
+/// - `by_id`: Maps transaction IDs to their corresponding `PendingTransaction` wrappers
+/// - `all`: A sorted set of all transactions ordered by priority
+/// - `independent_transactions`: A sorted set of transactions that can be executed independently (no dependencies)
+/// - `highest_nonces`: A sorted set tracking the highest nonce transaction for each sender
+///
+/// The pool ensures transactions are gapless (no nonce gaps) and maintains proper ordering based on the
+/// provided `TransactionOrdering` implementation.
+///
+/// # Type Parameters
+///
+/// * `O` - The transaction ordering strategy that implements `TransactionOrdering`
+
 #[derive(Debug, Clone)]
 pub struct PendingPool<O>
 where
@@ -166,6 +183,7 @@ impl<O> PendingPool<O>
 where
     O: TransactionOrdering,
 {
+    /// Creates a new `PendingPool` with the given ordering strategy.
     pub fn new(ordering: O) -> Self {
         Self {
             ordering,
@@ -202,7 +220,7 @@ where
         id
     }
 
-    /// Adds a new transactions to the pending queue.
+    /// Adds a new transaction to the pending queue.
     ///
     /// # Panics
     ///
