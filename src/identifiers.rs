@@ -28,22 +28,27 @@ pub struct TransactionId {
 }
 
 impl TransactionId {
+    /// Creates a new `TransactionId` with the given sender and nonce.
     pub const fn new(sender: Address, nonce: u64) -> Self {
         Self { sender, nonce }
     }
 
+    /// Finds the ancestor of a transaction with a given nonce and sender.
     pub fn ancestor(tx_nonce: u64, on_chain_nonce: u64, signer: Address) -> Option<Self> {
         (tx_nonce > on_chain_nonce).then(|| Self::new(signer, tx_nonce.saturating_sub(1)))
     }
 
+    /// Finds the ancestor of a transaction without checking if the nonce is 0.
     pub fn unchecked_ancestor(&self) -> Option<Self> {
         (self.nonce != 0).then(|| Self::new(self.sender, self.nonce - 1))
     }
 
+    /// Finds the descendant of a transaction.
     pub const fn descendant(&self) -> Self {
         Self::new(self.sender, self.next_nonce())
     }
 
+    /// Finds the next nonce of a transaction.
     #[inline]
     pub const fn next_nonce(&self) -> u64 {
         self.nonce + 1
