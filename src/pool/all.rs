@@ -25,6 +25,7 @@ use crate::{
     pool::{state::SubPool, PoolInternalTransaction},
 };
 
+/// A collection of all transactions in the pool
 #[derive(Debug, Clone, Default)]
 pub struct AllTransactions {
     /// All transactions in the pool, grouped by sender, orderd by nonce
@@ -46,15 +47,18 @@ impl AllTransactions {
         }
     }
 
+    /// Checks if the pool contains a transaction by its hash
     pub(crate) fn contains(&self, tx_hash: &TxHash) -> bool {
         self.by_hash.contains_key(tx_hash)
     }
 
+    /// Increments the transaction count for a given sender
     pub(crate) fn tx_inc(&mut self, sender: Address) {
         let count = self.tx_counter.entry(sender).or_default();
         *count += 1;
     }
 
+    /// Decrements the transaction count for a given sender
     pub(crate) fn tx_decr(&mut self, sender: Address) {
         if let hash_map::Entry::Occupied(mut entry) = self.tx_counter.entry(sender) {
             let count = entry.get_mut();
