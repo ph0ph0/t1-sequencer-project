@@ -6,7 +6,7 @@
 //!
 //! The main structures in this module are:
 //! - `QueuedPoolTransaction`: Represents a transaction in the pool with its submission order.
-//! - `QueuedOrderedTransaction`: Represents an ordered transaction (implementation not shown in this snippet).
+//! - `QueuedOrderedTransaction`: Represents an ordered transaction.
 //!
 //! The module also provides implementations for various traits like `Ord`, `PartialOrd`, `Eq`, and
 //! `PartialEq` to enable efficient sorting and comparison.
@@ -100,6 +100,19 @@ impl Debug for QueuedOrderedTransaction {
         write!(f, "QueuedOrderedTransaction({:?})", self.0)
     }
 }
+
+/// A pool that manages queued transactions.
+///
+/// The `QueuedPool` maintains multiple data structures to efficiently track and order transactions:
+///
+/// - `current_submission_id`: Tracks the last transaction submission ID
+/// - `by_id`: Maps transaction IDs to their corresponding `QueuedPoolTransaction` wrappers
+/// - `best`: A sorted set of transactions ordered by their priority (higher gas price = better)
+/// - `sender_transaction_count`: Tracks number of transactions and last submission ID per sender
+///
+/// The queued pool holds transactions that are not yet ready to be included in blocks due to nonce gaps
+/// or other constraints. Transactions can be promoted from this pool to the pending pool when they
+/// become valid for inclusion.
 
 #[derive(Debug, Clone, Default)]
 pub struct QueuedPool {
