@@ -1,7 +1,6 @@
 //! Transaction sequence management for the transaction pool.
 //!
-//! This module provides the `TransactionSequence` struct, which is responsible for
-//! managing and ordering transactions within the pool. It handles the sequencing
+//! This module provides the `TransactionSequence` struct, which handles the sequencing
 //! of transactions, tracking their dependencies, and managing their execution order.
 //!
 //! The `TransactionSequence` struct maintains three main collections:
@@ -23,6 +22,25 @@ use alloy::primitives::TxHash;
 use crate::{
     identifiers::TransactionId, ordering::TransactionOrdering, pool::pending::PendingTransaction,
 };
+
+/// An iterator that yields transactions in sequence, respecting nonce ordering and dependencies.
+///
+/// The `TransactionSequence` maintains three main collections:
+///
+/// - `all`: A map of all transactions in the pool, keyed by their `TransactionId`
+/// - `independent`: A set of transactions that can be executed immediately (have the expected nonce)
+/// - `invalid`: A set of transaction hashes that have been marked as invalid
+///
+/// When iterating, it yields transactions in priority order from the `independent` set. Once a
+/// transaction with nonce N is returned, it unlocks the transaction with nonce N+1 which can then
+/// move from `all` to `independent`.
+///
+/// This ensures transactions are returned in a valid sequence while prioritizing high value
+/// transactions within each nonce slot.
+///
+/// # Type Parameters
+///
+/// * `O` - The transaction ordering strategy that implements `TransactionOrdering`
 
 #[derive(Debug, Clone)]
 pub struct TransactionSequence<O>
@@ -93,10 +111,7 @@ impl<O: TransactionOrdering> Iterator for TransactionSequence<O> {
 }
 
 /// A[`TransactionSequence`] implementation that filters the
-/// transactions of iter with predicate.
-///
-/// Filter out transactions are marked as invalid:
-/// [`TransactionSequence::mark_invalid`]
+/// transactions of iter with a predicate.
 #[derive(Debug, Clone)]
 pub struct TransactionSequenceFilter<O, P>
 where
