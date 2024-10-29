@@ -20,7 +20,6 @@ pub mod queued;
 pub mod sequence;
 pub mod state;
 
-// ------pool.rs-----
 use std::collections::btree_map::Entry;
 use std::sync::Arc;
 
@@ -102,6 +101,7 @@ pub struct Pool<O>
 where
     O: TransactionOrdering,
 {
+    /// Configuration parameters for the pool
     config: PoolConfig,
     /// All transactions in the pool, grouped by sender, ordered by nonce
     all_transactions: AllTransactions,
@@ -169,13 +169,13 @@ where
     /// and updates in the process. It handles the following steps:
     ///
     /// 1. Checks if the transaction already exists in the pool.
-    /// 2. Validatesthe transaction, considering on-chain balance and nonce.
+    /// 2. Validates the transaction, considering on-chain balance and nonce.
     /// 3. If successful, updates the pool state, including potential replacements and promotions.
     /// 4. Handles various error conditions that may occur during the insertion process.
     ///
     /// # Arguments
     ///
-    /// * `tx` - The transaction to be added, Alloy `TxEnvelope`.
+    /// * `tx` - The transaction to be added, Alloy `TxEnvelope` type.
     /// * `on_chain_balance` - The current on-chain balance of the sender's account.
     /// * `on_chain_nonce` - The current on-chain nonce of the sender's account.
     ///
@@ -202,103 +202,16 @@ where
         on_chain_nonce: u64,
     ) -> PoolResult<AddedTransaction> {
         let tx_hash = *tx.tx_hash();
-        // Check to see if the new tx already exists in the pool
+        
+        // Early return if transaction exists
         if self.contains(&tx_hash) {
-            return Err(PoolError::new(
-                tx_hash,
-                PoolErrorKind::AlreadyImported,
-            ));
+            return Err(PoolError::new(tx_hash, PoolErrorKind::AlreadyImported));
         }
 
+        // Insert the transaction or convert InsertErr to PoolError using a helper function
         match self.insert_tx(tx, on_chain_balance, on_chain_nonce) {
-            Ok(InsertOk {
-                transaction,
-                move_to,
-                replaced_tx,
-                updates,
-                ..
-            }) => {
-                // replace the new tx and remove the replaced in the subpool(s)
-                self.add_new_transaction(transaction.clone(), replaced_tx.clone(), move_to);
-                // Update inserted transactions metric
-                let UpdateOutcome {
-                    promoted,
-                    discarded,
-                } = self.process_updates(updates);
-
-                let replaced = replaced_tx.map(|(tx, _)| tx);
-
-                // This transaction was moved to the pending pool.
-                let res = if move_to.is_pending() {
-                    AddedTransaction::Pending(AddedPendingTransaction {
-                        transaction,
-                        promoted,
-                        discarded,
-                        replaced,
-                    })
-                } else {
-                    AddedTransaction::Queued {
-                        transaction,
-                        subpool: move_to,
-                        replaced,
-                    }
-                };
-
-                Ok(res)
-            }
-            Err(err) => match err {
-                InsertErr::UnknownTransactionType => {
-                    Err(PoolError::new(
-                        tx_hash,
-                        PoolErrorKind::UnknownTransactionType,
-                    ))
-                }
-                InsertErr::InvalidTxNonce {
-                    on_chain_nonce,
-                    tx_nonce,
-                } => {
-                    Err(PoolError::new(
-                        tx_hash,
-                        PoolErrorKind::InvalidTxNonce(on_chain_nonce, tx_nonce),
-                    ))
-                }
-                InsertErr::SignatureError => {
-                    Err(PoolError::new(
-                        tx_hash,
-                        PoolErrorKind::SignatureError,
-                    ))
-                }
-                InsertErr::Underpriced { existing } => {
-                    Err(PoolError::new(
-                        tx_hash,
-                        PoolErrorKind::ReplacementUnderpriced(existing),
-                    ))
-                }
-                InsertErr::FeeCapBelowMinimumProtocolFeeCap { fee_cap } => {
-                    Err(PoolError::new(
-                        tx_hash,
-                        PoolErrorKind::FeeCapBelowMinimumProtocolFeeCap(fee_cap),
-                    ))
-                }
-                InsertErr::ExceededSenderTransactionsCapacity { address } => {
-                    Err(PoolError::new(
-                        tx_hash,
-                        PoolErrorKind::SpammerExceededCapacity(address),
-                    ))
-                }
-                InsertErr::TxGasLimitMoreThanAvailableBlockGas {
-                    block_gas_limit,
-                    tx_gas_limit,
-                } => {
-                    Err(PoolError::new(
-                        tx_hash,
-                        PoolErrorKind::TxGasLimitMoreThanAvailableBlockGas(
-                            block_gas_limit,
-                            tx_gas_limit,
-                        ),
-                    ))
-                }
-            },
+            Ok(insert_ok) => self.process_insert_ok(insert_ok),
+            Err(err) => Err(self.convert_insert_error(err, tx_hash)),
         }
     }
 
@@ -483,6 +396,7 @@ where
         )
     }
 
+    /// Initializes the transaction state after ensuring that the transaction is valid
     fn initialize_tx_state(
         &self,
         transaction: &Arc<TxEnvelope>,
@@ -531,6 +445,7 @@ where
         Ok(state)
     }
 
+    /// Creates a pool internal transaction
     fn create_pool_tx(
         &self,
         transaction: Arc<TxEnvelope>,
@@ -544,6 +459,7 @@ where
         }
     }
 
+    /// Inserts a transaction into the pool or replaces an existing transaction with the same nonce
     fn insert_or_replace_tx(
         &mut self,
         transaction_id: TransactionId,
@@ -583,6 +499,7 @@ where
                     });
                 }
 
+                // Replace the existing transaction with the new transaction
                 let new_hash = *pool_tx.transaction.tx_hash();
                 let new_transaction = pool_tx.transaction.clone();
                 let replaced = entry.insert(pool_tx);
@@ -598,6 +515,7 @@ where
         }
     }
 
+    /// Updates the descendant transactions
     fn update_descendant_transactions(
         &mut self,
         transaction_id: TransactionId,
@@ -630,9 +548,10 @@ where
             } else {
                 let (id, tx) = descendants.peek().expect("includes >= 1");
                 if id.nonce < tx_nonce {
-                    // tx here is the next descendant of the current tx.
+                    // Looking at a transaction that comes before our new transaction. In this case, we check if that earlier transaction is NOT pending. This helps determine if there are any queued transactions that need to be processed first.
                     !tx.state.is_pending()
                 } else {
+                    // If id.nonce >= tx_nonce: We return true to indicate there is a queued ancestor, since we've found a transaction with a higher or equal nonce that comes before our current transaction in processing order.
                     true
                 }
             };
@@ -668,6 +587,7 @@ where
                 } else {
                     tx.state.insert(TxState::NO_PARKED_ANCESTORS);
                 }
+                // Update for next iteration
                 has_parked_ancestor = !tx.state.is_pending();
 
                 // update the pool based on the state
@@ -754,6 +674,7 @@ where
         Ok(transaction)
     }
 
+    /// Checks if the new transaction is underpriced
     fn is_underpriced(
         existing_max_fee_per_gas: u128,
         possible_replacement_max_fee_per_gas: u128,
@@ -839,7 +760,6 @@ where
     /// subpool.
     ///
     /// This is intended to be used when a transaction is included in a block,
-    /// [`Self::on_canonical_state_change`]
     fn prune_transaction_by_hash(&mut self, tx_hash: &B256) -> Option<Arc<TxEnvelope>> {
         let (tx, pool) = self.all_transactions.remove_transaction_by_hash(tx_hash)?;
 
@@ -859,6 +779,71 @@ where
         let tx = self.remove_from_subpool(from, id)?;
         self.add_transaction_to_subpool(to, tx.clone());
         Some(tx)
+    }
+
+    /// Converts an insert error to a pool error
+    fn convert_insert_error(&self, err: InsertErr, tx_hash: B256) -> PoolError {
+        let kind = match err {
+            InsertErr::UnknownTransactionType => PoolErrorKind::UnknownTransactionType,
+            InsertErr::InvalidTxNonce { on_chain_nonce, tx_nonce } => 
+                PoolErrorKind::InvalidTxNonce(on_chain_nonce, tx_nonce),
+            InsertErr::SignatureError => PoolErrorKind::SignatureError,
+            InsertErr::Underpriced { existing } => 
+                PoolErrorKind::ReplacementUnderpriced(existing),
+            InsertErr::FeeCapBelowMinimumProtocolFeeCap { fee_cap } => 
+                PoolErrorKind::FeeCapBelowMinimumProtocolFeeCap(fee_cap),
+            InsertErr::ExceededSenderTransactionsCapacity { address } => 
+                PoolErrorKind::SpammerExceededCapacity(address),
+            InsertErr::TxGasLimitMoreThanAvailableBlockGas { block_gas_limit, tx_gas_limit } => 
+                PoolErrorKind::TxGasLimitMoreThanAvailableBlockGas(block_gas_limit, tx_gas_limit),
+        };
+        PoolError::new(tx_hash, kind)
+    }
+
+    /// Processes the result of a successful transaction insertion
+    fn process_insert_ok(&mut self, insert_ok: InsertOk) -> PoolResult<AddedTransaction> {
+        let InsertOk {
+            transaction,
+            move_to,
+            replaced_tx,
+            updates,
+            ..
+        } = insert_ok;
+
+        self.add_new_transaction(transaction.clone(), replaced_tx.clone(), move_to);
+        let UpdateOutcome { promoted, discarded } = self.process_updates(updates);
+        
+        let replaced = replaced_tx.map(|(tx, _)| tx);
+        
+        Ok(if move_to.is_pending() {
+            AddedTransaction::Pending(AddedPendingTransaction {
+                transaction,
+                promoted,
+                discarded,
+                replaced,
+            })
+        } else {
+            AddedTransaction::Queued {
+                transaction,
+                subpool: move_to,
+                replaced,
+            }
+        })
+    }
+
+    /// Returns the number of transactions in the pool for a given sender
+    pub fn get_sender_transaction_count(&self, sender: &Address) -> usize {
+        self.all_transactions.tx_counter.get(sender).copied().unwrap_or_default()
+    }
+
+    /// Returns true if the sender has reached their transaction limit
+    pub fn is_sender_at_capacity(&self, sender: &Address) -> bool {
+        self.get_sender_transaction_count(sender) >= self.config.max_account_slots
+    }
+
+    /// Checks if a transaction's gas price meets minimum requirements
+    pub fn meets_minimum_gas_price(&self, fee_cap: u128) -> bool {
+        fee_cap >= self.config.minimal_protocol_basefee as u128
     }
 }
 
@@ -1654,7 +1639,7 @@ mod tests {
         // Create transaction sequence
         let mut sequence = pool.transaction_sequence();
 
-        // NOTE: For debugging purposes, uncomment the code below loop through sequence and print each transaction
+        // NOTE: For debugging purposes, uncomment the code below to loop through sequence and print each transaction
         // for i in 0..6 {
         //     let next = sequence.next().unwrap();
         //     let sender = next.sender();
