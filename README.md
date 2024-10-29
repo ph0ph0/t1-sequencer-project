@@ -23,6 +23,22 @@ The `TransactionSequence` type is a helper type that provides an iterator over t
 - **Concurrency Support**: Designed with thread-safety in mind, allowing for concurrent access and modifications.
 - **Testing**: The project includes a test suite to ensure reliability and correctness.
 
+## Running Tests
+
+To run the test suite for this project, use:
+
+```bash
+cargo test
+```
+
+## Opening the Docs
+
+To open the docs for this project, use:
+
+```bash
+cargo doc --open
+```
+
 ## Pool Type
 
 The `Pool` struct, defined in `pool/mod.rs`, serves as the central component of the transaction sequencing system. It orchestrates the lifecycle and organization of transactions within the pool.
